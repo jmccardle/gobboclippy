@@ -104,6 +104,19 @@ option(GC_WIN_CONSOLE "Build Windows binary as a console app (debugging)" OFF)
 
 if(WIN32 AND NOT GC_WIN_CONSOLE)
     set_target_properties(gobboclippy PROPERTIES WIN32_EXECUTABLE TRUE)
+
+    # /SUBSYSTEM:WINDOWS makes the linker look for WinMain. mingw ships a shim
+    # that forwards it to main; MSVC does not, and fails with an unresolved
+    # WinMain in exe_winmain.obj. Naming the standard CRT entry point directly
+    # is the MSVC counterpart of what mingw does for us.
+    #
+    # SDL3::SDL3main is the fuller answer -- it also hands main() a UTF-8 argv,
+    # which neither toolchain does here -- but it would change the mingw
+    # cross-build, which is the Windows binary that has actually been tested.
+    # Worth revisiting if a non-ASCII --script path ever needs to work.
+    if(MSVC)
+        target_link_options(gobboclippy PRIVATE "/ENTRY:mainCRTStartup")
+    endif()
 endif()
 
 # Resolve shared libraries relative to the executable, so the packaged

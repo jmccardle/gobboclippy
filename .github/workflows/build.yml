@@ -75,6 +75,7 @@ jobs:
         run: cmake --build build --config Release -j 4
 
       - name: Package
+        id: package
         run: cmake --build build --config Release --target package
 
       # Runs the packaged tree, not the build tree, so it exercises the
@@ -108,10 +109,13 @@ jobs:
           env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --capabilities
           env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --script scripts/smoke_test.py
 
-      # always(): a smoke-test failure still fails the job, but the archive is
-      # kept so the failure can be taken apart instead of guessed at.
+      # Keyed on the package step, not on the job: a smoke-test failure still
+      # fails the job, but the archive is kept so the failure can be taken
+      # apart instead of guessed at. If packaging itself never ran there is
+      # nothing to upload, and if-no-files-found stays fatal for the case that
+      # matters -- a package target that produced nothing.
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: steps.package.outcome == 'success'
         with:
           name: gobboclippy-${{ matrix.name }}
           path: |
