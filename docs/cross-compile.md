@@ -109,6 +109,7 @@ linked into a PE binary. So the runtime is supplied explicitly via
   libpython3XX.a    MinGW import library
   python3XX.dll     the runtime
   python3XX.zip     stdlib as .pyc
+  LICENSE.txt       the embeddable package's own notice
   DLLs/*.pyd        stdlib C extensions (omit if built into the DLL)
   *.dll             their dependencies (libssl, libffi, sqlite3, vcruntime)
 ```
@@ -116,6 +117,13 @@ linked into a PE binary. So the runtime is supplied explicitly via
 A loose `Lib/` is **not** needed; the zip is the whole standard library. An
 earlier version of this file said otherwise and the package shipped both,
 which doubled the archive to 29 MB. See "The wine 8.0 red herring" below.
+
+`LICENSE.txt` **is** needed, and is checked for like any other piece. It is not
+merely the PSF licence — it carries the "Additional Conditions for this Windows
+binary build" clause covering the Microsoft Distributable Code linked into
+`python3XX.dll`, the `.pyd` files and the `vcruntime140*.dll` the kit ships.
+Redistributing those without it is the one licensing obligation here that
+actually binds. `cmake/Package.cmake` copies it to `licenses/CPython-PSF.txt`.
 
 `cmake/WindowsPython.cmake` validates this and fails loudly on a missing
 piece, because a half-assembled kit links fine and then dies at startup.
@@ -125,7 +133,7 @@ McRogueFace already has one, which is where the kit in `deps/winpy` came from:
 | piece | source |
 |---|---|
 | `include/` | `McRogueFace/modules/cpython/Include` + `PC/pyconfig.h` |
-| `libpython314.a`, `python314.dll`, `*.pyd`, `*.dll` | `McRogueFace/__lib_windows/` |
+| `libpython314.a`, `python314.dll`, `*.pyd`, `*.dll`, `LICENSE.txt` | `McRogueFace/__lib_windows/` |
 
 That directory is python.org's **embeddable package** verbatim -- `python.cat`,
 `python314._pth` and all -- which is the easiest way to get one yourself. Take

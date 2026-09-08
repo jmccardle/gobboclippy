@@ -11,6 +11,7 @@
 #     libpython3XX.a      MinGW import library
 #     python3XX.dll       the runtime
 #     python3XX.zip       the standard library
+#     LICENSE.txt         the embeddable package's own notice, shipped verbatim
 #     Lib/                the standard library as loose .py files
 #     DLLs/*.pyd          stdlib C extension modules (omit if the runtime has
 #                         them built in, as McRogueFace's does)
@@ -66,7 +67,15 @@ set(GC_PY_VERSION_X "3.${GC_WINPY_MINOR}")
 set(GC_WINPY_DLL   "${GC_WINPY_ROOT}/python${GC_PY_TAG_X}.dll")
 set(GC_WINPY_ZIP   "${GC_WINPY_ROOT}/python${GC_PY_TAG_X}.zip")
 
-foreach(f "${GC_WINPY_DLL}" "${GC_WINPY_ZIP}")
+# The embeddable package's own LICENSE.txt, which is required rather than
+# optional. It is not just the PSF licence: it carries the "Additional
+# Conditions for this Windows binary build" clause covering the Microsoft
+# Distributable Code linked into python3XX.dll, the .pyd files and the
+# vcruntime DLLs this kit ships. Redistributing those without it is the one
+# licence problem in this project that is actually binding.
+set(GC_WINPY_LICENSE "${GC_WINPY_ROOT}/LICENSE.txt")
+
+foreach(f "${GC_WINPY_DLL}" "${GC_WINPY_ZIP}" "${GC_WINPY_LICENSE}")
     if(NOT EXISTS "${f}")
         message(FATAL_ERROR "Kit is missing ${f}")
     endif()

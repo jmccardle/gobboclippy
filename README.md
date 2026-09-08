@@ -263,7 +263,26 @@ startup.
 
 MIT, © 2026 John McCardle. See [LICENSE](LICENSE).
 
-A packaged build redistributes three other projects, under their own terms:
-SDL3 (zlib), stb (MIT / public domain) and CPython (PSF-2.0). Their notices
-are not yet copied into the staging tree — an open item before any release
-that is not a draft.
+A packaged build redistributes three other projects in binary form, under
+their own terms: SDL3 (zlib), stb (MIT / public domain) and CPython (PSF-2.0).
+Their notices ship in `licenses/` inside the package, with an index:
+
+```
+gobboclippy-0.0.3-Linux/
+  licenses/
+    README.txt                    what each file covers
+    gobboclippy-MIT.txt
+    SDL3-zlib.txt
+    stb-MIT-or-public-domain.txt
+    CPython-PSF.txt
+```
+
+Each is copied from the tree it belongs to — the pinned SDL checkout, the
+pinned stb checkout, the interpreter being bundled — so a notice cannot
+describe a different version than the one shipped, and none of them is
+vendored into this repository. A missing notice is a configure error.
+
+On Windows that CPython notice matters more than the others: it carries
+"Additional Conditions for this Windows binary build", Microsoft's terms for
+the Distributable Code linked into `python3XX.dll`, the `.pyd` modules and the
+`vcruntime140*.dll` beside them. The Windows kit is required to supply it.

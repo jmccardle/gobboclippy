@@ -185,6 +185,89 @@ elseif(Python3_LIBRARY_RELEASE)
         VERBATIM)
 endif()
 
+# --- third-party notices ---------------------------------------------------
+#
+# A packaged build redistributes SDL3, stb and CPython as binaries. All three
+# licences require their notice to travel with them, and CPython's Windows
+# build additionally carries Microsoft's terms for the runtime DLLs it links.
+#
+# Every notice is copied from the source tree it belongs to -- the pinned SDL
+# checkout, the pinned stb checkout, the interpreter being bundled -- so it can
+# never describe a different version than the one shipped. Nothing here is
+# vendored into this repository, and nothing is optional: a missing notice is a
+# configure error, because the alternative is discovering it after a release.
+set(GC_LICENSE_DIR "${GC_STAGE}/licenses")
+
+if(CMAKE_CROSSCOMPILING)
+    set(GC_PY_LICENSE "${GC_WINPY_LICENSE}")
+elseif(WIN32)
+    # python.org's Windows layout puts it in the prefix root.
+    set(GC_PY_LICENSE "${GC_PY_PREFIX}/LICENSE.txt")
+else()
+    # CPython's `make install` puts it in LIBDEST, beside the stdlib.
+    set(GC_PY_LICENSE "${Python3_STDLIB}/LICENSE.txt")
+endif()
+
+set(GC_NOTICES
+    "${CMAKE_SOURCE_DIR}/LICENSE"    "gobboclippy-MIT.txt"
+    "${SDL3_SOURCE_DIR}/LICENSE.txt" "SDL3-zlib.txt"
+    "${stb_SOURCE_DIR}/LICENSE"      "stb-MIT-or-public-domain.txt"
+    "${GC_PY_LICENSE}"               "CPython-PSF.txt"
+)
+
+list(LENGTH GC_NOTICES _n)
+math(EXPR _last "${_n} / 2 - 1")
+foreach(i RANGE ${_last})
+    math(EXPR _src "${i} * 2")
+    math(EXPR _dst "${i} * 2 + 1")
+    list(GET GC_NOTICES ${_src} _from)
+    list(GET GC_NOTICES ${_dst} _name)
+    if(NOT EXISTS "${_from}")
+        message(FATAL_ERROR
+            "Missing licence notice for ${_name}: no file at ${_from}. "
+            "The package redistributes this component, so its notice has to "
+            "ship with it.")
+    endif()
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${_from}" "${GC_LICENSE_DIR}/${_name}"
+        VERBATIM)
+endforeach()
+
+# The index. Written at configure time from what was actually resolved above,
+# and deliberately free of build-machine paths -- the package is meant to be
+# relocatable, and that includes not naming the directory it was built in.
+set(GC_LICENSE_INDEX "${CMAKE_BINARY_DIR}/licenses-README.txt")
+file(WRITE "${GC_LICENSE_INDEX}"
+"gobboclippy ${PROJECT_VERSION} -- ${GC_PLATFORM}
+
+This package is MIT licensed and redistributes three other projects in binary
+form. Their notices are here in full.
+
+  gobboclippy-MIT.txt             gobboclippy itself. MIT.
+  SDL3-zlib.txt                   SDL3, the window/tray/event layer. zlib.
+  stb-MIT-or-public-domain.txt    stb_image, the PNG decoder. MIT or public
+                                  domain, at your choice.
+  CPython-PSF.txt                 the bundled interpreter and standard
+                                  library, Python ${GC_PY_VERSION_VALUE}. PSF-2.0, plus the
+                                  notices for the software CPython itself
+                                  incorporates.
+")
+if(WIN32)
+    file(APPEND "${GC_LICENSE_INDEX}"
+"
+CPython-PSF.txt also carries \"Additional Conditions for this Windows binary
+build\", covering the Microsoft Distributable Code linked into python*.dll,
+the .pyd extension modules and the vcruntime DLLs shipped beside them. That
+clause applies to this package and to anything you redistribute it inside.
+")
+endif()
+
+add_custom_command(TARGET package-dir POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${GC_LICENSE_INDEX}" "${GC_LICENSE_DIR}/README.txt"
+    VERBATIM)
+
 # --- archive ---------------------------------------------------------------
 # zip for Windows (what people expect to double-click), tar.gz elsewhere.
 set(GC_ARCHIVE_DIR "gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}")
