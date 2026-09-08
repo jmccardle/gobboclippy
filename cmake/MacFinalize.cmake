@@ -101,6 +101,7 @@ foreach(line ${dep_lines})
 
     message(STATUS "MacFinalize: ${ref} -> @rpath/${name}")
     list(APPEND fixed "${name}")
+    list(APPEND relocated "${LIBDIR}/${name}")
 endforeach()
 
 if(NOT fixed)
@@ -112,10 +113,38 @@ endif()
 
 # --- strip, then sign -------------------------------------------------------
 #
-# Everything but the executable first, then the executable, so the ordering
-# requirement is expressed by the list rather than by remembering it.
-file(GLOB_RECURSE machos "${STAGE}/*.dylib" "${STAGE}/*.so")
+# Found by content, not by extension. A *.dylib/*.so glob looks obviously
+# right and is wrong here: a framework CPython -- which is what
+# actions/setup-python installs -- names its dylib `Python`, no extension at
+# all. Globbing skipped the one file whose signature this script had just
+# invalidated, reported success, and left dyld to abort with `code signature
+# invalid` at startup.
+execute_process(
+    COMMAND sh -c
+            "find '${STAGE}' -type f -exec file --mime-type {} + | awk -F': ' '$2 ~ /mach-binary/ {print $1}'"
+    OUTPUT_VARIABLE machos_raw
+    RESULT_VARIABLE rc)
+if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "MacFinalize: could not enumerate Mach-O files in ${STAGE}")
+endif()
+string(STRIP "${machos_raw}" machos_raw)
+string(REPLACE "\n" ";" machos "${machos_raw}")
+
+# The executable goes last: its signature has to cover a tree that has stopped
+# changing.
+list(REMOVE_ITEM machos "${EXE}")
 list(APPEND machos "${EXE}")
+
+# Whatever was relocated above must be in that list, because it is exactly the
+# set of files whose signatures are now invalid. If detection ever misses one
+# again, it should say so here rather than in dyld.
+foreach(f ${relocated})
+    if(NOT f IN_LIST machos)
+        message(FATAL_ERROR
+            "MacFinalize: ${f} was relocated but is not recognised as a Mach-O "
+            "binary, so it would ship with the signature this script broke.")
+    endif()
+endforeach()
 
 set(before 0)
 set(after 0)
@@ -139,6 +168,17 @@ foreach(f ${machos})
     math(EXPR after "${after} + ${sz}")
 endforeach()
 
+# Verify rather than assume. An unsigned or stale-signed binary is not a
+# degraded package, it is one the kernel refuses to run, and the only other
+# place that shows up is a user's machine.
+foreach(f ${machos})
+    execute_process(COMMAND "${CODESIGN}" --verify --strict "${f}"
+                    RESULT_VARIABLE rc ERROR_VARIABLE err)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "codesign --verify failed on ${f}: ${err}")
+    endif()
+endforeach()
+
 list(LENGTH machos n)
 math(EXPR saved_mb "(${before} - ${after}) / 1048576")
-message(STATUS "MacFinalize: stripped and signed ${n} binaries, ${saved_mb} MB removed")
+message(STATUS "MacFinalize: stripped, signed and verified ${n} binaries, ${saved_mb} MB removed")

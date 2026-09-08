@@ -283,6 +283,13 @@ if(APPLE)
                 -DSTAGE=${GC_STAGE}
                 -P "${CMAKE_SOURCE_DIR}/cmake/MacFinalize.cmake"
         VERBATIM)
+elseif(MSVC)
+    # No strip step, and no strip tool either -- MSVC does not ship one because
+    # it does not need one. Its symbols go to a .pdb rather than into the image,
+    # and every binary in a native Windows package is MSVC output: our exe,
+    # SDL3.dll, and python.org's python3XX.dll and .pyd modules. Demanding a
+    # strip here would be inventing a failure, not surfacing one.
+    message(STATUS "MSVC: no strip step; symbols live in .pdb, which is not shipped")
 else()
     if(NOT CMAKE_STRIP)
         message(FATAL_ERROR
