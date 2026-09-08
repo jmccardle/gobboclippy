@@ -13,3 +13,6 @@ __pycache__/
 # Windows CPython kit: ~26MB of prebuilt runtime, assembled locally.
 # See docs/cross-compile.md
 deps/winpy/
+
+# Release archives assembled by cmake --target package.
+dist/
