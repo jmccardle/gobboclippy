@@ -37,7 +37,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.1.0  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.0.1  (SDL 3.4.16, Python 3.11)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -116,7 +116,7 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.1.0-Linux/
+gobboclippy-0.0.1-Linux/
   gobboclippy            152 KB
   libSDL3.so.0           4.2 MB
   assets/                clippy.svg + rendered PNG
@@ -201,9 +201,30 @@ placeholder if none is available.
 
 ## Status
 
-Verified on Linux/X11: build, capability probe, transparency, always-on-top,
-tray icon and menu, relocatable package, standalone run on the bundled Python.
+**Linux/X11 — working.** Build, capability probe, transparency, always-on-top,
+tray icon and menu, relocatable package, and the smoke test run from an
+extracted tarball with a scrubbed environment on the bundled interpreter.
 
-Not yet exercised: Windows and macOS (the CI matrix builds them natively; see
-`.github/workflows/build.yml`), and Wayland, where always-on-top is expected
-to report `no`.
+**Windows — builds, does not yet run scripts.** Cross-compiled from Debian
+with mingw-w64. The binary links, packages, starts, creates its window and
+tray, and `--capabilities` reports every capability granted and exits 0 under
+wine. But the bundled interpreter fails at `Py_InitializeFromConfig` with
+`can't initialize sys standard streams`, so no script runs.
+
+The shipped `python314.dll` and `python314.zip` are byte-identical to the ones
+in McRogueFace's working Windows release, and that binary starts its embedded
+interpreter fine in the same wine prefix. So this is the `PyConfig` setup in
+`startPython()`, not the runtime. `docs/cross-compile.md` records what has
+been ruled out.
+
+**macOS — not built.** Needs a Mac or a hosted macOS runner; see
+`docs/cross-compile.md`.
+
+**Wayland — untested.** Expect `always on top: no`.
+
+### CI
+
+`.forgejo/workflows/build.yml` builds Linux natively and Windows via
+mingw-w64, both in a Debian container, for a self-hosted podman runner.
+`.github/workflows/build.yml` additionally builds macOS on a hosted runner,
+which is the only thing that genuinely requires one.

@@ -9,3 +9,7 @@ __pycache__/
 # Tracked deliberately: the CI Windows and macOS runners have no SVG
 # rasteriser guaranteed, and the SVG remains the source of truth.
 !assets/*.png
+
+# Windows CPython kit: ~26MB of prebuilt runtime, assembled locally.
+# See docs/cross-compile.md
+deps/winpy/

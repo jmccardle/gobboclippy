@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(gobboclippy VERSION 0.1.0 LANGUAGES C CXX)
+project(gobboclippy VERSION 0.0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -49,10 +49,23 @@ FetchContent_Declare(stb
 
 FetchContent_MakeAvailable(SDL3 stb)
 
-# Interpreter is needed as well as Development.Embed: it is what defines
-# Python3_EXECUTABLE and Python3_STDLIB, which the packaging step uses to build
-# the bundled stdlib zip.
-find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter Development.Embed)
+# Python. Two paths: a native build finds the host interpreter, a cross-build
+# is handed a prebuilt Windows kit. Both end up providing GC_PY_TAG/GC_PY_VERSION
+# and a link target, so nothing downstream needs to know which happened.
+if(CMAKE_CROSSCOMPILING)
+    include(cmake/WindowsPython.cmake)
+    set(GC_PYTHON_TARGET gc_winpython)
+    set(GC_PY_TAG_VALUE     "${GC_PY_TAG_X}")
+    set(GC_PY_VERSION_VALUE "${GC_PY_VERSION_X}")
+else()
+    # Interpreter is needed as well as Development.Embed: it is what defines
+    # Python3_EXECUTABLE and Python3_STDLIB, which the packaging step uses to
+    # build the bundled stdlib zip.
+    find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter Development.Embed)
+    set(GC_PYTHON_TARGET Python3::Python)
+    set(GC_PY_TAG_VALUE     "${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}")
+    set(GC_PY_VERSION_VALUE "${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
+endif()
 
 # ---------------------------------------------------------------------------
 # Executable
@@ -73,16 +86,23 @@ if(GC_STATIC_SDL)
 else()
     target_link_libraries(gobboclippy PRIVATE SDL3::SDL3)
 endif()
-target_link_libraries(gobboclippy PRIVATE Python3::Python)
+target_link_libraries(gobboclippy PRIVATE ${GC_PYTHON_TARGET})
 
 target_compile_definitions(gobboclippy PRIVATE
     GC_VERSION="${PROJECT_VERSION}"
-    GC_PY_VERSION="${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}"
-    GC_PY_TAG="${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}"
+    GC_PY_VERSION="${GC_PY_VERSION_VALUE}"
+    GC_PY_TAG="${GC_PY_TAG_VALUE}"
 )
 
 # On Windows, build as a GUI app so no console window appears alongside the pet.
-if(WIN32)
+#
+# GC_WIN_CONSOLE=ON builds a console-subsystem binary instead. That is what
+# McRogueFace ships, and it sidesteps the stdio-handle problem in
+# ensureStdioStreams() entirely, at the cost of a console window appearing
+# behind the pet. Useful for bisecting startup failures.
+option(GC_WIN_CONSOLE "Build Windows binary as a console app (debugging)" OFF)
+
+if(WIN32 AND NOT GC_WIN_CONSOLE)
     set_target_properties(gobboclippy PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
@@ -115,11 +135,18 @@ add_custom_command(TARGET gobboclippy POST_BUILD
 # SDL3 beside the binary too. The RPATH is $ORIGIN so that the packaged tree is
 # relocatable; without this the build tree would be the one layout that cannot
 # find its own libraries.
+#
+# Chosen with if() rather than $<IF:...>: a generator expression must be valid
+# in *both* branches, and TARGET_SONAME_FILE does not exist for a Windows DLL.
 if(NOT GC_STATIC_SDL)
+    if(WIN32)
+        set(GC_SDL_DEV $<TARGET_FILE:SDL3::SDL3>)
+    else()
+        set(GC_SDL_DEV $<TARGET_SONAME_FILE:SDL3::SDL3>)
+    endif()
     add_custom_command(TARGET gobboclippy POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                $<IF:$<BOOL:${WIN32}>,$<TARGET_FILE:SDL3::SDL3>,$<TARGET_SONAME_FILE:SDL3::SDL3>>
-                $<TARGET_FILE_DIR:gobboclippy>
+                "${GC_SDL_DEV}" $<TARGET_FILE_DIR:gobboclippy>
         VERBATIM)
 endif()
 

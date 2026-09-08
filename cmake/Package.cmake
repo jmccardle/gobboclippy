@@ -4,16 +4,19 @@
 #   cmake --build build --target package-dir     # staging tree
 #   cmake --build build --target package         # tar.gz / zip
 #
-# Layout produced (identical on every platform, so AppPaths has one case):
+# The layout differs between Windows and POSIX because CPython's own default
+# sys.path does. Setting PYTHONHOME to the package root satisfies both; only
+# where the files sit changes.
 #
-#   gobboclippy-<version>-<platform>/
-#     gobboclippy(.exe)
-#     assets/
-#     scripts/
-#     lib/
-#       python<ver>.zip       stdlib, minus test suites
-#       libpython<ver>.so     (Linux; .dll beside the exe on Windows)
-#     SDL3.so / .dll          unless -DGC_STATIC_SDL=ON
+#   POSIX                             Windows
+#   ------------------------------    ------------------------------
+#   gobboclippy                       gobboclippy.exe
+#   libSDL3.so.0                      SDL3.dll
+#   assets/  scripts/                 assets/  scripts/
+#   lib/python3XX.zip                 python3XX.zip      <- prefix root
+#   lib/python3.XX/lib-dynload/       DLLs/*.pyd
+#   lib/libpython3.XX.so              python3XX.dll      <- beside the exe
+#                                     libssl-3.dll, ...
 # ---------------------------------------------------------------------------
 
 if(WIN32)
@@ -26,17 +29,13 @@ endif()
 
 set(GC_STAGE "${CMAKE_BINARY_DIR}/stage/gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}")
 
-# Build the stdlib zip with the host interpreter: zipfile is in every stdlib,
-# so this needs no extra tooling on any platform.
-# CPython looks for "python<major><minor>.zip" on sys.path -- no dot. Naming
-# it anything else means the interpreter silently never finds its stdlib.
-set(GC_PY_TAG "${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}")
-set(GC_STDLIB_ZIP "${GC_STAGE}/lib/python${GC_PY_TAG}.zip")
-
-# Compiled stdlib extension modules (_socket, zlib, _struct...). The zip holds
-# only .py files; these .so files cannot be imported from inside a zip and must
-# sit in <home>/lib/python<ver>/lib-dynload.
-set(GC_DYNLOAD_SRC "${Python3_STDLIB}/lib-dynload")
+# CPython looks for "python<major><minor>.zip" on sys.path -- no dot. Naming it
+# anything else means the interpreter silently never finds its stdlib.
+if(WIN32)
+    set(GC_STDLIB_ZIP "${GC_STAGE}/python${GC_PY_TAG_VALUE}.zip")
+else()
+    set(GC_STDLIB_ZIP "${GC_STAGE}/lib/python${GC_PY_TAG_VALUE}.zip")
+endif()
 
 add_custom_target(package-dir
     DEPENDS gobboclippy
@@ -49,32 +48,58 @@ add_custom_target(package-dir
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/scripts" "${GC_STAGE}/scripts"
 
-    COMMAND ${CMAKE_COMMAND}
-            -DSTDLIB_SRC=${Python3_STDLIB}
-            -DZIP_OUT=${GC_STDLIB_ZIP}
-            -DPY_EXE=${Python3_EXECUTABLE}
-            -DWORK_DIR=${CMAKE_BINARY_DIR}
-            -P "${CMAKE_SOURCE_DIR}/cmake/ZipStdlib.cmake"
-
     COMMENT "Staging ${GC_STAGE}"
     VERBATIM
 )
 
-if(EXISTS "${GC_DYNLOAD_SRC}")
+# --- the standard library --------------------------------------------------
+if(CMAKE_CROSSCOMPILING)
+    # The Windows kit already carries a built stdlib zip. There is no Windows
+    # interpreter here to build one with, and the Linux stdlib is the wrong
+    # content, so this is a copy rather than a rebuild.
+    # Windows CPython wants <home>/Lib as a real directory; the zip alone is
+    # not enough to bring the interpreter up. Both are shipped, matching the
+    # layout McRogueFace uses with this same runtime.
     add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy "${GC_WINPY_ZIP}" "${GC_STDLIB_ZIP}"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GC_DYNLOAD_SRC}"
-                "${GC_STAGE}/lib/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/lib-dynload"
+                "${GC_WINPY_ROOT}/Lib" "${GC_STAGE}/lib/Python/Lib"
         VERBATIM)
+    if(EXISTS "${GC_WINPY_DLLDIR}")
+        add_custom_command(TARGET package-dir POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${GC_WINPY_DLLDIR}" "${GC_STAGE}/DLLs"
+            VERBATIM)
+    endif()
+else()
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                -DSTDLIB_SRC=${Python3_STDLIB}
+                -DZIP_OUT=${GC_STDLIB_ZIP}
+                -DPY_EXE=${Python3_EXECUTABLE}
+                -DWORK_DIR=${CMAKE_BINARY_DIR}
+                -P "${CMAKE_SOURCE_DIR}/cmake/ZipStdlib.cmake"
+        VERBATIM)
+
+    # Compiled stdlib extension modules (_socket, zlib, _struct...). The zip
+    # holds only .py files; these cannot be imported from inside a zip and must
+    # sit in <home>/lib/python<ver>/lib-dynload.
+    set(GC_DYNLOAD_SRC "${Python3_STDLIB}/lib-dynload")
+    if(EXISTS "${GC_DYNLOAD_SRC}")
+        add_custom_command(TARGET package-dir POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${GC_DYNLOAD_SRC}"
+                    "${GC_STAGE}/lib/python${GC_PY_VERSION_VALUE}/lib-dynload"
+            VERBATIM)
+    endif()
 endif()
 
-# SDL3 shared library beside the binary (skipped for static builds).
+# --- SDL3 ------------------------------------------------------------------
 #
-# Copy the SONAME file (libSDL3.so.0), not the fully-versioned real file
-# (libSDL3.so.0.4.16): the SONAME is the name the dynamic loader actually
-# searches for. cmake -E copy dereferences the symlink, so this lands as a
-# single real file with the right name and no symlink chain to preserve
-# through a zip.
+# Ship the SONAME file (libSDL3.so.0), not the fully-versioned real file
+# (libSDL3.so.0.4.16): the SONAME is the name the dynamic loader searches for.
+# cmake -E copy dereferences the symlink, so this lands as a single real file
+# with the right name and no symlink chain to survive an archive round-trip.
 if(NOT GC_STATIC_SDL)
     if(WIN32)
         set(GC_SDL_SHIP $<TARGET_FILE:SDL3::SDL3>)
@@ -87,13 +112,18 @@ if(NOT GC_STATIC_SDL)
         VERBATIM)
 endif()
 
-# libpython. Static Python builds have no shared object to copy, so this is
-# conditional on one actually existing.
-#
-# Windows differs twice: the thing to ship is the runtime DLL (python3XX.dll)
-# rather than the link-time .lib, and it must sit beside the executable, since
-# Windows does not have an $ORIGIN/lib equivalent for the loader.
-if(WIN32)
+# --- libpython and its dependencies ----------------------------------------
+if(CMAKE_CROSSCOMPILING)
+    # python3XX.dll plus whatever the .pyd modules link against (libssl,
+    # libffi, sqlite3, the MSVC runtime). All beside the exe: Windows has no
+    # $ORIGIN/lib equivalent for the loader.
+    foreach(dll ${GC_WINPY_DEPDLLS})
+        add_custom_command(TARGET package-dir POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${dll}" "${GC_STAGE}/"
+            VERBATIM)
+    endforeach()
+elseif(WIN32)
     if(Python3_RUNTIME_LIBRARY_RELEASE)
         add_custom_command(TARGET package-dir POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -111,14 +141,21 @@ elseif(Python3_LIBRARY_RELEASE)
         VERBATIM)
 endif()
 
+# --- archive ---------------------------------------------------------------
+# zip for Windows (what people expect to double-click), tar.gz elsewhere.
+set(GC_ARCHIVE_DIR "gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}")
+if(WIN32)
+    set(GC_ARCHIVE "${CMAKE_BINARY_DIR}/${GC_ARCHIVE_DIR}.zip")
+    set(GC_TAR_ARGS cf "${GC_ARCHIVE}" --format=zip)
+else()
+    set(GC_ARCHIVE "${CMAKE_BINARY_DIR}/${GC_ARCHIVE_DIR}.tar.gz")
+    set(GC_TAR_ARGS czf "${GC_ARCHIVE}")
+endif()
+
 add_custom_target(package
     DEPENDS package-dir
     COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}/stage"
-            ${CMAKE_COMMAND} -E tar
-            $<IF:$<BOOL:${WIN32}>,cf,czf>
-            "${CMAKE_BINARY_DIR}/gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}$<IF:$<BOOL:${WIN32}>,.zip,.tar.gz>"
-            $<IF:$<BOOL:${WIN32}>,--format=zip,-->
-            "gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}"
-    COMMENT "Writing gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}"
+            ${CMAKE_COMMAND} -E tar ${GC_TAR_ARGS} "${GC_ARCHIVE_DIR}"
+    COMMENT "Writing ${GC_ARCHIVE}"
     VERBATIM
 )

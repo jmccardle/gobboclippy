@@ -2,6 +2,11 @@
 
 #include <SDL3/SDL.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#endif
+
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -17,6 +22,43 @@ struct Options {
     std::string script;                 // empty -> scripts/clippy.py
     bool        print_caps_only = false;
 };
+
+// Give the process a valid stdin, stdout and stderr.
+//
+// The Windows build is a GUI-subsystem binary so that double-clicking the pet
+// does not open a console window alongside it. Two consequences, both handled
+// here:
+//
+//   1. Run from a terminal, stdout is discarded, so --capabilities and --help
+//      would print nothing. AttachConsole reclaims the parent's console.
+//
+//   2. Run with no console at all, the standard handles are invalid. CPython
+//      builds sys.stdin/stdout/stderr from those descriptors during startup
+//      and aborts with "can't initialize sys standard streams" if any one of
+//      them is bad -- before a single line of script runs. stdin is the one
+//      that bites, because redirecting output still leaves fd 0 invalid.
+//
+// McRogueFace never hits the second case: mcrogueface.exe is a console
+// subsystem binary, so Windows always hands it the three streams.
+//
+// Binding the leftovers to NUL is not papering over an error. A GUI process
+// legitimately has nowhere for stdio to go, and NUL is what that means.
+void ensureStdioStreams()
+{
+#ifdef _WIN32
+    FILE* unused = nullptr;
+
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        if (_fileno(stdout) < 0) freopen_s(&unused, "CONOUT$", "w", stdout);
+        if (_fileno(stderr) < 0) freopen_s(&unused, "CONOUT$", "w", stderr);
+        if (_fileno(stdin)  < 0) freopen_s(&unused, "CONIN$",  "r", stdin);
+    }
+
+    if (_fileno(stdout) < 0) freopen_s(&unused, "NUL", "w", stdout);
+    if (_fileno(stderr) < 0) freopen_s(&unused, "NUL", "w", stderr);
+    if (_fileno(stdin)  < 0) freopen_s(&unused, "NUL", "r", stdin);
+#endif
+}
 
 void usage(const char* argv0)
 {
@@ -72,38 +114,127 @@ bool parseArgs(int argc, char** argv, Options& o)
     return true;
 }
 
-// Decide where CPython should look for its standard library.
+// Locate a bundled CPython runtime, if the package ships one.
 //
-// Packaged builds ship lib/python<ver>.zip beside the executable; development
-// builds use whatever Python the binary was linked against. Which mode is in
-// effect is logged rather than inferred silently, because a wrong PYTHONHOME
-// surfaces much later as a confusing import error.
-void configurePythonHome(PyConfig& config)
-{
-    const std::string zip = AppPaths::libDir() + "/python" GC_PY_TAG ".zip";
-    const std::string dir = AppPaths::libDir() + "/python" GC_PY_VERSION;
+// Development builds have none and use whatever Python the binary was linked
+// against. Which mode is in effect is logged rather than inferred silently,
+// because a wrong runtime surfaces much later as a confusing import error.
+struct Runtime {
+    bool        bundled = false;
+    std::string home;
+    std::string stdlib_zip;
+    std::string dynload;               // POSIX: lib/python3.X/lib-dynload
 
-    if (AppPaths::exists(zip) || AppPaths::exists(dir)) {
-        const std::string home = AppPaths::base();
-        PyConfig_SetBytesString(&config, &config.home, home.c_str());
-        config.isolated              = 1;
-        config.use_environment       = 0;
-        config.user_site_directory   = 0;
-        SDL_Log("python: bundled runtime (home=%s)", home.c_str());
-    } else {
+    // Whether to let CPython derive sys.path from home, or to state it.
+    // Windows derivation works and is what McRogueFace relies on with this
+    // exact runtime; the POSIX derivation does not find a bundled tree, so
+    // there the paths are given explicitly.
+    bool        derive_paths = false;
+};
+
+Runtime findRuntime()
+{
+    Runtime rt;
+
+    // Two legitimate layouts, because CPython's own default sys.path differs:
+    // Windows keeps python3XX.zip at the prefix root with .pyd files in DLLs/,
+    // POSIX puts the zip under lib/ with lib-dynload beside it.
+    const std::string zip_root = AppPaths::base() + "python" GC_PY_TAG ".zip";
+    const std::string zip_lib  = AppPaths::libDir() + "/python" GC_PY_TAG ".zip";
+
+    if (AppPaths::exists(zip_root))      rt.stdlib_zip = zip_root;
+    else if (AppPaths::exists(zip_lib))  rt.stdlib_zip = zip_lib;
+    else {
         SDL_Log("python: system runtime " GC_PY_VERSION
-                " (no lib/python" GC_PY_TAG ".zip beside the binary)");
+                " (no bundled python" GC_PY_TAG ".zip beside the binary)");
+        return rt;
     }
+
+    rt.bundled = true;
+
+#ifdef _WIN32
+    // Windows CPython expects <home>/Lib to hold the standard library, and
+    // finds python3XX.zip beside the executable on its own. Pointing home at
+    // the package root instead -- where there is no Lib/ -- makes
+    // Py_InitializeFromConfig fail with "can't initialize sys standard
+    // streams", which names the symptom and not the cause.
+    rt.home         = AppPaths::base() + "lib/Python";
+    rt.derive_paths = true;
+#else
+    rt.home         = AppPaths::base();
+    rt.derive_paths = false;
+
+    const std::string dynload = AppPaths::libDir() + "/python" GC_PY_VERSION "/lib-dynload";
+    if (AppPaths::exists(dynload)) rt.dynload = dynload;
+#endif
+
+    SDL_Log("python: bundled runtime " GC_PY_VERSION " (%s)", rt.stdlib_zip.c_str());
+    return rt;
 }
 
 bool startPython(const Options& opts, std::string& error_out)
 {
-    PyConfig config;
-    PyConfig_InitPythonConfig(&config);
-    PyConfig_SetBytesString(&config, &config.program_name, "gobboclippy");
-    configurePythonHome(config);
+    (void)opts;
 
-    PyStatus status = Py_InitializeFromConfig(&config);
+    // Pre-initialise in UTF-8 mode.
+    //
+    // This has to happen before Py_InitializeFromConfig, and it is what stops
+    // CPython probing the console code page to choose an encoding for
+    // sys.stdout/stderr. A GUI-subsystem process has no console to probe, and
+    // the failure is the singularly unhelpful "can't initialize sys standard
+    // streams" raised before any script gets to run. Setting stdio_encoding on
+    // PyConfig alone is too late to prevent it.
+    PyPreConfig preconfig;
+    PyPreConfig_InitIsolatedConfig(&preconfig);
+    preconfig.utf8_mode = 1;
+
+    PyStatus status = Py_PreInitialize(&preconfig);
+    if (PyStatus_Exception(status)) {
+        error_out = std::string("Py_PreInitialize: ") +
+                    (status.err_msg ? status.err_msg : "unknown");
+        return false;
+    }
+
+    const Runtime rt = findRuntime();
+
+    PyConfig config;
+    if (rt.bundled) {
+        PyConfig_InitIsolatedConfig(&config);
+    } else {
+        // Development: let CPython find the system interpreter the normal way.
+        PyConfig_InitPythonConfig(&config);
+    }
+
+    config.configure_c_stdio = 1;
+    PyConfig_SetBytesString(&config, &config.stdio_encoding, "utf-8");
+    PyConfig_SetBytesString(&config, &config.stdio_errors,   "surrogateescape");
+    PyConfig_SetBytesString(&config, &config.program_name,   "gobboclippy");
+
+    if (rt.bundled) {
+        PyConfig_SetBytesString(&config, &config.home, rt.home.c_str());
+    }
+
+    if (rt.bundled && !rt.derive_paths) {
+
+        // State sys.path outright rather than letting CPython derive it from
+        // home. The derivation rules differ between Windows and POSIX, and
+        // when they get it wrong they do so silently -- the interpreter comes
+        // up with an empty path and every import fails.
+        config.module_search_paths_set = 1;
+        const std::string paths[] = { rt.stdlib_zip, rt.dynload, rt.home };
+        for (const std::string& path : paths) {
+            if (path.empty()) continue;
+            status = PyWideStringList_Append(&config.module_search_paths,
+                                             Py_DecodeLocale(path.c_str(), nullptr));
+            if (PyStatus_Exception(status)) {
+                error_out = "could not add " + path + " to the module search path";
+                PyConfig_Clear(&config);
+                return false;
+            }
+        }
+    }
+
+    status = Py_InitializeFromConfig(&config);
     PyConfig_Clear(&config);
 
     if (PyStatus_Exception(status)) {
@@ -156,6 +287,8 @@ bool runScript(const std::string& path, std::string& error_out)
 
 int main(int argc, char** argv)
 {
+    ensureStdioStreams();
+
     Options opts;
     if (!parseArgs(argc, argv, opts)) return 2;
 
