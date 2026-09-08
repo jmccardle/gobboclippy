@@ -37,7 +37,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.0.1  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.0.2  (SDL 3.4.16, Python 3.11)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -116,7 +116,7 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.0.1-Linux/
+gobboclippy-0.0.2-Linux/
   gobboclippy            152 KB
   libSDL3.so.0           4.2 MB
   assets/                clippy.svg + rendered PNG
