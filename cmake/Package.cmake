@@ -169,15 +169,10 @@ elseif(WIN32)
                 "${GC_PY_DLL}" "${GC_STAGE}/"
         VERBATIM)
 elseif(APPLE)
-    # Not a plain copy: on macOS the shipped dylib has to be renamed to
-    # @rpath and the executable rewritten to match, or the package only runs
-    # on the machine that built it. See cmake/MacRelocate.cmake.
-    add_custom_command(TARGET package-dir POST_BUILD
-        COMMAND ${CMAKE_COMMAND}
-                -DEXE=${GC_STAGE}/gobboclippy
-                -DLIBDIR=${GC_STAGE}/lib
-                -P "${CMAKE_SOURCE_DIR}/cmake/MacRelocate.cmake"
-        VERBATIM)
+    # Deliberately nothing here. On macOS the shipped dylib cannot be a plain
+    # copy -- it has to be renamed to @rpath, with the executable rewritten to
+    # match -- and that has to happen after everything else is staged. See the
+    # finalisation step at the bottom of this file.
 elseif(Python3_LIBRARY_RELEASE)
     add_custom_command(TARGET package-dir POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -267,6 +262,41 @@ add_custom_command(TARGET package-dir POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${GC_LICENSE_INDEX}" "${GC_LICENSE_DIR}/README.txt"
     VERBATIM)
+
+# --- finalise the binaries -------------------------------------------------
+#
+# Last, because it rewrites files the steps above put there.
+#
+# The interpreter we bundle is somebody else's build. Debian ships one that is
+# stripped; the one actions/setup-python installs is not, and that difference
+# alone is 12 MB compressed -- the first Linux package CI produced was 20 MB
+# against 8.0 MB for the identical commit built locally. Stripping in the
+# staging tree, rather than asking the build machine to provide a small Python,
+# is what makes the two agree.
+if(APPLE)
+    # Relocate, strip and sign are one script on macOS because their order is
+    # forced: install_name_tool and strip each invalidate the signature, so
+    # signing has to come last and has to come after both.
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                -DEXE=${GC_STAGE}/gobboclippy
+                -DSTAGE=${GC_STAGE}
+                -P "${CMAKE_SOURCE_DIR}/cmake/MacFinalize.cmake"
+        VERBATIM)
+else()
+    if(NOT CMAKE_STRIP)
+        message(FATAL_ERROR
+            "No strip tool found. The bundled interpreter may be unstripped, "
+            "which silently doubles the package.")
+    endif()
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                -DSTAGE=${GC_STAGE}
+                -DSTRIP=${CMAKE_STRIP}
+                -DPLATFORM=${GC_PLATFORM}
+                -P "${CMAKE_SOURCE_DIR}/cmake/StripTree.cmake"
+        VERBATIM)
+endif()
 
 # --- archive ---------------------------------------------------------------
 # zip for Windows (what people expect to double-click), tar.gz elsewhere.

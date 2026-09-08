@@ -125,20 +125,31 @@ Produces a relocatable directory and an archive:
 
 ```
 gobboclippy-0.0.3-Linux/
-  gobboclippy            152 KB
-  libSDL3.so.0           4.2 MB
+  gobboclippy            132 KB
+  libSDL3.so.0           3.6 MB
   assets/                clippy.svg + rendered PNG
   scripts/               clippy.py
+  licenses/              notices for everything redistributed here
   lib/
-    libpython3.11.so     7.7 MB
-    python311.zip        2.4 MB   stdlib, test suites stripped
+    libpython3.11.so     7.4 MB
+    python311.zip        2.4 MB   stdlib, test suites excluded
     python3.11/lib-dynload/        stdlib C extensions
 ```
 
-**18 MB on disk, 8.0 MB compressed.** The binary's RUNPATH is
+**17 MB on disk, 7.9 MB compressed.** The binary's RUNPATH is
 `$ORIGIN:$ORIGIN/lib`, and every runtime path is resolved from
 `SDL_GetBasePath()`, so the directory can be moved anywhere. Verified by
 running it from a different filesystem with `env -i`.
+
+Packaging strips every binary in the staging tree, and this is not cosmetic:
+the interpreter is somebody else's build, and whether it arrives stripped is
+not something the project gets to assume. Debian's is. The one
+`actions/setup-python` installs is not — 23 MB of `libpython` and 16 MB of
+`lib-dynload`, which took the first Linux package CI ever produced to 20 MB
+compressed against 8.0 MB for the identical commit built locally. Stripping in
+the staging tree is what makes the two agree. Nothing outside the staging tree
+is ever touched; the source of those copies is the machine's real Python
+installation.
 
 Three naming details that are easy to get wrong and fail silently:
 
@@ -206,6 +217,8 @@ placeholder if none is available.
 | `src/AppPaths.*` | exe-relative path resolution |
 | `cmake/Package.cmake` | the zip-and-ship staging tree |
 | `cmake/ZipStdlib.cmake` | stdlib zip construction |
+| `cmake/StripTree.cmake` | strip the staged binaries (Linux, Windows) |
+| `cmake/MacFinalize.cmake` | macOS: relocate, strip, sign — in that order |
 
 ## Status
 
