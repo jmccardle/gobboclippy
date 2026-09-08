@@ -39,15 +39,11 @@ if(NOT EXISTS "${GC_WINPY_ROOT}/include/Python.h")
         "No include/Python.h in the kit at ${GC_WINPY_ROOT}")
 endif()
 
-# Windows CPython brings itself up from <home>/Lib. A kit with only the zip
-# links fine and then dies at startup, so require it here instead.
-if(NOT IS_DIRECTORY "${GC_WINPY_ROOT}/Lib")
-    message(FATAL_ERROR
-        "No Lib/ in the kit at ${GC_WINPY_ROOT}.\n"
-        "Windows CPython needs the standard library as loose files as well as "
-        "the zip; the interpreter fails with \"can't initialize sys standard "
-        "streams\" without it.")
-endif()
+# No loose Lib/ is required. An earlier version of this file demanded one,
+# believing it was what fixed "can't initialize sys standard streams". It was
+# not: that error came from running the exe with piped stdio under wine 8.0,
+# and it reproduces with the stock python.org python.exe in its own directory.
+# The stdlib zip alone brings the interpreter up. See docs/cross-compile.md.
 
 # Derive the version from the import library rather than asking for it, so the
 # kit cannot disagree with the flags the build uses.

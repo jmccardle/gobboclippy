@@ -205,26 +205,41 @@ placeholder if none is available.
 tray icon and menu, relocatable package, and the smoke test run from an
 extracted tarball with a scrubbed environment on the bundled interpreter.
 
-**Windows — builds, does not yet run scripts.** Cross-compiled from Debian
-with mingw-w64. The binary links, packages, starts, creates its window and
-tray, and `--capabilities` reports every capability granted and exits 0 under
-wine. But the bundled interpreter fails at `Py_InitializeFromConfig` with
-`can't initialize sys standard streams`, so no script runs.
+**Windows — working, under wine.** Cross-compiled from Debian with mingw-w64.
+The packaged zip, freshly extracted, passes the same smoke test on its bundled
+Python 3.14: window, tray, transparency, always-on-top, sprite loading and the
+host API, all reporting `windows` as the video driver.
 
-The shipped `python314.dll` and `python314.zip` are byte-identical to the ones
-in McRogueFace's working Windows release, and that binary starts its embedded
-interpreter fine in the same wine prefix. So this is the `PyConfig` setup in
-`startPython()`, not the runtime. `docs/cross-compile.md` records what has
-been ruled out.
+Tested under wine 10, not on real Windows hardware. That is a genuine gap —
+wine is not Windows — but it exercises the bundled interpreter, the stdlib zip
+and the `.pyd` extension modules rather than only checking that the binary
+links. **Use wine 10 or newer**: wine 8.0 hands a piped process invalid
+standard handles, which stops CPython from starting at all, and the stock
+python.org `python.exe` fails there identically. `docs/cross-compile.md` has
+the details, along with the C runtime rules that the mingw/MSVC split imposes
+on `src/main.cpp`.
 
-**macOS — not built.** Needs a Mac or a hosted macOS runner; see
-`docs/cross-compile.md`.
+**macOS — not built.** The only target that genuinely needs hardware we do not
+have; see `docs/macos.md` for the routes and what they cost.
 
-**Wayland — untested.** Expect `always on top: no`.
+**Wayland — untested, and expected to be partly broken.** SDL's Wayland
+backend has no `SetWindowAlwaysOnTop` hook at all, and `SDL_SetWindowAlwaysOnTop`
+returns success regardless, so the flag reads back as set while nothing has
+happened. `src/Capabilities.cpp` therefore reports against the video driver
+rather than trusting SDL. `SDL_SetWindowPosition` fails outright on Wayland —
+a desktop pet cannot place itself — so X11/XWayland is the supported Linux path
+for now.
+
+**Linux tray on GNOME.** SDL's tray backend talks to libayatana-appindicator
+over D-Bus. Vanilla GNOME Shell has no StatusNotifierItem host, so
+`SDL_CreateTray()` succeeds and no icon appears. That silent failure is not
+detectable from SDL; GNOME users need the AppIndicator extension.
 
 ### CI
 
-`.forgejo/workflows/build.yml` builds Linux natively and Windows via
-mingw-w64, both in a Debian container, for a self-hosted podman runner.
-`.github/workflows/build.yml` additionally builds macOS on a hosted runner,
-which is the only thing that genuinely requires one.
+`.forgejo/workflows/build.yml` builds *and tests* Linux natively and Windows
+via mingw-w64, both in a Debian container, for a self-hosted podman runner. The
+Linux job runs on `debian:12`; the Windows job runs on `debian:trixie` because
+it needs wine 10 to run its own output. `.github/workflows/build.yml`
+additionally builds macOS on a hosted runner, which is the only thing that
+genuinely requires one.

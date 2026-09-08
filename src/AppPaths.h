@@ -23,4 +23,9 @@ std::string libDir();                         // <base>/lib
 
 bool exists(const std::string& path);
 
+// Read a whole file into memory. Used for Python sources: handing CPython a
+// FILE* is unsafe when the interpreter links a different C runtime than this
+// binary, which is the case for the mingw-built Windows target.
+bool readFile(const std::string& path, std::string& out, std::string& error_out);
+
 } // namespace AppPaths

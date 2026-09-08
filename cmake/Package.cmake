@@ -57,13 +57,12 @@ if(CMAKE_CROSSCOMPILING)
     # The Windows kit already carries a built stdlib zip. There is no Windows
     # interpreter here to build one with, and the Linux stdlib is the wrong
     # content, so this is a copy rather than a rebuild.
-    # Windows CPython wants <home>/Lib as a real directory; the zip alone is
-    # not enough to bring the interpreter up. Both are shipped, matching the
-    # layout McRogueFace uses with this same runtime.
+    #
+    # The zip is the whole standard library; the kit's loose Lib/ is deliberately
+    # not shipped. It was, briefly, on the theory that Windows CPython needed it
+    # to start -- it does not, and shipping both doubled the archive to 29 MB.
     add_custom_command(TARGET package-dir POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy "${GC_WINPY_ZIP}" "${GC_STDLIB_ZIP}"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${GC_WINPY_ROOT}/Lib" "${GC_STAGE}/lib/Python/Lib"
         VERBATIM)
     if(EXISTS "${GC_WINPY_DLLDIR}")
         add_custom_command(TARGET package-dir POST_BUILD

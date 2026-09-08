@@ -33,13 +33,10 @@ struct Options {
 //      would print nothing. AttachConsole reclaims the parent's console.
 //
 //   2. Run with no console at all, the standard handles are invalid. CPython
-//      builds sys.stdin/stdout/stderr from those descriptors during startup
-//      and aborts with "can't initialize sys standard streams" if any one of
-//      them is bad -- before a single line of script runs. stdin is the one
-//      that bites, because redirecting output still leaves fd 0 invalid.
-//
-// McRogueFace never hits the second case: mcrogueface.exe is a console
-// subsystem binary, so Windows always hands it the three streams.
+//      probes each of fds 0/1/2 during startup; a fd that is cleanly invalid
+//      yields sys.stdout = None and is not an error, but one that passes the
+//      probe and then fails on real I/O aborts startup outright. Giving the
+//      process three real descriptors avoids the question.
 //
 // Binding the leftovers to NUL is not papering over an error. A GUI process
 // legitimately has nowhere for stdio to go, and NUL is what that means.
@@ -153,12 +150,14 @@ Runtime findRuntime()
     rt.bundled = true;
 
 #ifdef _WIN32
-    // Windows CPython expects <home>/Lib to hold the standard library, and
-    // finds python3XX.zip beside the executable on its own. Pointing home at
-    // the package root instead -- where there is no Lib/ -- makes
-    // Py_InitializeFromConfig fail with "can't initialize sys standard
-    // streams", which names the symptom and not the cause.
-    rt.home         = AppPaths::base() + "lib/Python";
+    // The package root is the prefix, matching python.org's embeddable layout:
+    // python3XX.zip and python3XX.dll beside the exe, .pyd files in DLLs/.
+    // CPython derives sys.path from there itself, so leave it to do that.
+    //
+    // This used to point at <base>/lib/Python and ship a second, loose copy of
+    // the standard library, on the theory that Windows CPython could not start
+    // without one. It can; see docs/cross-compile.md.
+    rt.home         = AppPaths::base();
     rt.derive_paths = true;
 #else
     rt.home         = AppPaths::base();
@@ -176,14 +175,13 @@ bool startPython(const Options& opts, std::string& error_out)
 {
     (void)opts;
 
-    // Pre-initialise in UTF-8 mode.
+    // Pre-initialise in UTF-8 mode, before Py_InitializeFromConfig.
     //
-    // This has to happen before Py_InitializeFromConfig, and it is what stops
-    // CPython probing the console code page to choose an encoding for
-    // sys.stdout/stderr. A GUI-subsystem process has no console to probe, and
-    // the failure is the singularly unhelpful "can't initialize sys standard
-    // streams" raised before any script gets to run. Setting stdio_encoding on
-    // PyConfig alone is too late to prevent it.
+    // This fixes the encoding of paths and stdio rather than deriving it from
+    // the console code page or the locale, so a script behaves the same on a
+    // machine whose console is cp437 as on one set to UTF-8. It is hygiene,
+    // not a fix for anything: contrary to what this comment used to claim, it
+    // was never what stood between this build and a working interpreter.
     PyPreConfig preconfig;
     PyPreConfig_InitIsolatedConfig(&preconfig);
     preconfig.utf8_mode = 1;
@@ -224,8 +222,20 @@ bool startPython(const Options& opts, std::string& error_out)
         const std::string paths[] = { rt.stdlib_zip, rt.dynload, rt.home };
         for (const std::string& path : paths) {
             if (path.empty()) continue;
-            status = PyWideStringList_Append(&config.module_search_paths,
-                                             Py_DecodeLocale(path.c_str(), nullptr));
+
+            // Py_DecodeLocale allocates, and returns NULL on a decoding error
+            // or out of memory. Appending NULL would be undefined, and the
+            // buffer is ours to release either way.
+            wchar_t* wide = Py_DecodeLocale(path.c_str(), nullptr);
+            if (!wide) {
+                error_out = "could not decode " + path + " for the module search path";
+                PyConfig_Clear(&config);
+                return false;
+            }
+
+            status = PyWideStringList_Append(&config.module_search_paths, wide);
+            PyMem_RawFree(wide);
+
             if (PyStatus_Exception(status)) {
                 error_out = "could not add " + path + " to the module search path";
                 PyConfig_Clear(&config);
@@ -260,26 +270,52 @@ bool startPython(const Options& opts, std::string& error_out)
     return true;
 }
 
+// Run a script by compiling its source, never by handing CPython a FILE*.
+//
+// PyRun_SimpleFile takes a FILE*, and a FILE* may not cross a C runtime
+// boundary. On Windows this build is mingw (msvcrt.dll) while the bundled
+// python3XX.dll is the python.org embeddable build (UCRT, api-ms-win-crt-*).
+// The two runtimes have incompatible FILE layouts, so a FILE* opened here and
+// read there is undefined behaviour -- it hangs rather than failing cleanly,
+// which is worse. CPython documents the constraint:
+//
+//   "the FILE structure for different C libraries can be different and
+//    incompatible ... care should be taken that FILE* parameters are only
+//    passed to these functions if it is certain that they were created by the
+//    same library that the Python runtime is using."
+//   -- https://docs.python.org/3/c-api/veryhigh.html
+//
+// Reading the bytes ourselves and compiling them sidesteps the boundary
+// entirely. It is also what gives tracebacks the real script path.
 bool runScript(const std::string& path, std::string& error_out)
 {
-    if (!AppPaths::exists(path)) {
-        error_out = "script not found: " + path;
+    std::string source;
+    if (!AppPaths::readFile(path, source, error_out)) return false;
+
+    PyObject* code = Py_CompileString(source.c_str(), path.c_str(), Py_file_input);
+    if (!code) {
+        PyErr_Print();
+        error_out = "could not compile: " + path;
         return false;
     }
 
-    FILE* f = std::fopen(path.c_str(), "r");
-    if (!f) {
-        error_out = "could not open script: " + path;
+    PyObject* main_mod = PyImport_AddModule("__main__");   // borrowed
+    if (!main_mod) {
+        Py_DECREF(code);
+        error_out = "no __main__ module";
         return false;
     }
+    PyObject* globals = PyModule_GetDict(main_mod);        // borrowed
 
-    const int rc = PyRun_SimpleFile(f, path.c_str());
-    std::fclose(f);
+    PyObject* result = PyEval_EvalCode(code, globals, globals);
+    Py_DECREF(code);
 
-    if (rc != 0) {
+    if (!result) {
+        PyErr_Print();
         error_out = "script raised an exception: " + path;
         return false;
     }
+    Py_DECREF(result);
     return true;
 }
 

@@ -55,15 +55,22 @@ jobs:
 
   windows-cross:
     runs-on: docker
+    # trixie, not bookworm, for one reason: wine. Bookworm ships wine 8.0,
+    # which hands a process invalid standard handles when its stdio is a pipe.
+    # CPython probes those handles at startup and aborts with "can't initialize
+    # sys standard streams" -- the stock python.org python.exe fails there too,
+    # so it is not something a build can fix. wine 10 in trixie runs the same
+    # binary correctly with ordinary piped output, which is all CI has.
     container:
-      image: debian:12
+      image: debian:trixie
     steps:
       - name: Toolchain
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential cmake git ca-certificates pkg-config \
-            mingw-w64 mingw-w64-tools python3
+            mingw-w64 mingw-w64-tools python3 \
+            wine wine64 xvfb xauth
 
       - uses: actions/checkout@v4
 
@@ -92,10 +99,19 @@ jobs:
       - name: Package
         run: cmake --build build-windows --target package
 
-      # NOTE: there is no runtime test here. Cross-compiling produces a binary
-      # this container cannot execute. wine gets as far as --capabilities but
-      # the bundled interpreter does not start yet (see docs/cross-compile.md),
-      # so the Windows archive is currently build-verified only.
+      # Runs the packaged tree under wine, so this covers the bundled
+      # interpreter, the stdlib zip and the .pyd extension modules -- not just
+      # that the binary links. wine is not Windows and this is not a substitute
+      # for testing on the real thing, but it catches the packaging mistakes
+      # that a cross-build makes easy to ship.
+      - name: Smoke test (wine)
+        run: |
+          export WINEPREFIX=/tmp/wineprefix WINEDEBUG=-all
+          xvfb-run -a wine wineboot -u || true
+          cd build-windows/stage/gobboclippy-*-Windows
+          xvfb-run -a wine ./gobboclippy.exe --capabilities
+          xvfb-run -a wine ./gobboclippy.exe --script scripts/smoke_test.py
+
       - uses: actions/upload-artifact@v3
         with:
           name: gobboclippy-Windows
