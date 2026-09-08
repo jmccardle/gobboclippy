@@ -57,11 +57,19 @@ gobboclippy 0.0.2  (SDL 3.4.16, Python 3.11)
 
 Two caveats worth knowing before you file a bug:
 
-**Wayland has no always-on-top protocol.** A client cannot raise itself; that
-is compositor policy. `SDL_WINDOW_ALWAYS_ON_TOP` reads back as set even
-though nothing implements it, so `Capabilities` cross-checks the video driver
-rather than trusting the flag. This is the same ceiling Electron hits — it is
-not something a different toolkit would solve.
+**Wayland's `xdg-shell` has no always-on-top, and no positioning either.**
+SDL's Wayland backend registers no always-on-top hook at all, yet
+`SDL_SetWindowAlwaysOnTop` still returns success and the flag reads back as
+set — so `Capabilities` cross-checks the video driver rather than trusting
+either. `SDL_SetWindowPosition` fails outright, which matters more for a pet:
+it cannot place itself. This is the same ceiling Electron hits.
+
+It is not a security restriction and it is not unsolvable — `wlr-layer-shell`
+is the unprivileged protocol that panels and docks use, SDL supports handing
+it a roleless surface, and it maps onto a pet cleanly. It just does not exist
+on GNOME. **X11/XWayland is the supported Linux path**, and gets the full
+capability set on every desktop including GNOME and KDE under Wayland. See
+[docs/wayland.md](docs/wayland.md) for the route if that changes.
 
 **The Linux tray dlopens GTK3 and libayatana-appindicator3 at runtime.** There
 is no build-time dependency, but a machine without them gets no tray. Because
