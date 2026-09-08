@@ -4,6 +4,11 @@ name: build
 # iteration (see docs/cross-compile.md) but CI builds natively, because that is
 # the only way to produce a macOS package at all and it keeps the Windows
 # Python situation to "whatever setup-python installed".
+#
+# Every job runs its own output. A build that only proves the linker was happy
+# is not worth the minutes: all three failure modes this project has actually
+# hit -- a missing stdlib zip, a missing .pyd directory, an absolute install
+# name -- link cleanly and fail at startup.
 
 on:
   push:
@@ -11,6 +16,13 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -20,9 +32,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ubuntu-22.04 on purpose, not ubuntu-latest: the glibc the binary is
+          # linked against is a floor for every machine that runs it, and 22.04
+          # buys Debian 12 and its derivatives.
           - { name: Linux,   os: ubuntu-22.04 }
-          - { name: Windows, os: windows-2022 }
-          - { name: macOS,   os: macos-14 }
+          - { name: Windows, os: windows-latest }
+          # macos-latest is arm64. There is no universal2 CPython to bundle,
+          # so this is an arm64-only package by construction; see docs/macos.md.
+          - { name: macOS,   os: macos-latest }
 
     steps:
       - uses: actions/checkout@v4
@@ -33,7 +50,8 @@ jobs:
 
       # SDL3 builds these from source on Linux; without them the X11 and
       # Wayland backends are silently omitted and the window has no way to be
-      # borderless or transparent.
+      # borderless or transparent. The appindicator runtime is needed by the
+      # smoke test as well as the build: a missing tray is fatal by design.
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -42,13 +60,13 @@ jobs:
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev \
             wayland-protocols libdecor-0-dev libgtk-3-dev \
-            libayatana-appindicator3-dev libasound2-dev libpulse-dev
+            libayatana-appindicator3-dev libasound2-dev libpulse-dev \
+            xvfb dbus-x11
 
-      - name: Render assets
-        run: |
-          python -m pip install --quiet cairosvg
-          python tools/render_assets.py 256
-        shell: bash
+      # assets/clippy.png is committed, rendered from assets/clippy.svg by
+      # tools/render_assets.py. It is not regenerated here: that script shells
+      # out to rsvg-convert, inkscape or ImageMagick, none of which is present
+      # on all three runner images.
 
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -59,17 +77,41 @@ jobs:
       - name: Package
         run: cmake --build build --config Release --target package
 
-      # Proves the packaged tree is relocatable and uses its own bundled
-      # Python, rather than the runner's. Headless, so it exercises startup
-      # and the capability probe but not rendering.
-      - name: Smoke test
+      # Runs the packaged tree, not the build tree, so it exercises the
+      # relocated layout: the bundled interpreter, the stdlib zip, the loose
+      # extension modules, and on macOS the rewritten install names.
+      - name: Smoke test (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get install -y xvfb
           cd build/stage/gobboclippy-*-Linux
-          xvfb-run -a ./gobboclippy --capabilities
+          xvfb-run -a dbus-run-session -- ./gobboclippy --capabilities
+          xvfb-run -a dbus-run-session -- ./gobboclippy --script scripts/smoke_test.py
 
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cd build/stage/gobboclippy-*-Windows
+          ./gobboclippy.exe --capabilities
+          ./gobboclippy.exe --script scripts/smoke_test.py
+
+      # Also proves relocatability the only way that means anything: from a
+      # different directory, with the build tree's Python removed from the
+      # environment. If an absolute install name survived, this is where it
+      # shows up.
+      - name: Smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mv build/stage/gobboclippy-*-macOS "$RUNNER_TEMP/relocated"
+          otool -L "$RUNNER_TEMP/relocated/gobboclippy"
+          cd "$RUNNER_TEMP/relocated"
+          env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --capabilities
+          env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --script scripts/smoke_test.py
+
+      # always(): a smoke-test failure still fails the job, but the archive is
+      # kept so the failure can be taken apart instead of guessed at.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: gobboclippy-${{ matrix.name }}
           path: |
@@ -86,7 +128,20 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: dist }
+
+      - name: Checksums
+        run: |
+          find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+            -exec sha256sum {} + | sed 's|dist/[^/]*/||' > dist/SHA256SUMS
+          cat dist/SHA256SUMS
+
+      # Anything with a hyphen in the tag -- v0.0.3-draft, v1.0.0-rc1 -- is a
+      # prerelease. GitHub will not mark it as one on its own.
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*
+          files: |
+            dist/**/*.tar.gz
+            dist/**/*.zip
+            dist/SHA256SUMS
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

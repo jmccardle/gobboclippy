@@ -37,7 +37,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.0.2  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.0.3  (SDL 3.4.16, Python 3.11)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -124,7 +124,7 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.0.2-Linux/
+gobboclippy-0.0.3-Linux/
   gobboclippy            152 KB
   libSDL3.so.0           4.2 MB
   assets/                clippy.svg + rendered PNG
@@ -245,9 +245,25 @@ detectable from SDL; GNOME users need the AppIndicator extension.
 
 ### CI
 
-`.forgejo/workflows/build.yml` builds *and tests* Linux natively and Windows
-via mingw-w64, both in a Debian container, for a self-hosted podman runner. The
-Linux job runs on `debian:12`; the Windows job runs on `debian:trixie` because
-it needs wine 10 to run its own output. `.github/workflows/build.yml`
-additionally builds macOS on a hosted runner, which is the only thing that
-genuinely requires one.
+Two runners, deliberately not one.
+
+`.forgejo/workflows/build.yml` is the self-hosted podman path: Linux natively
+on `debian:12`, Windows cross-compiled with mingw-w64 on `debian:trixie` — the
+newer base because the Windows job runs its own output under wine, and that
+needs wine 10.
+
+`.github/workflows/build.yml` builds all three natively on hosted runners, and
+is the only way macOS gets built at all (see `docs/macos.md` for why it cannot
+be cross-compiled). Each job runs the tree it packaged, not the one it built:
+every failure this project has actually hit — a missing stdlib zip, a missing
+`.pyd` directory, an absolute macOS install name — links cleanly and fails at
+startup.
+
+## License
+
+MIT, © 2026 John McCardle. See [LICENSE](LICENSE).
+
+A packaged build redistributes three other projects, under their own terms:
+SDL3 (zlib), stb (MIT / public domain) and CPython (PSF-2.0). Their notices
+are not yet copied into the staging tree — an open item before any release
+that is not a draft.

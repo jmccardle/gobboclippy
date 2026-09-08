@@ -81,16 +81,47 @@ else()
         VERBATIM)
 
     # Compiled stdlib extension modules (_socket, zlib, _struct...). The zip
-    # holds only .py files; these cannot be imported from inside a zip and must
-    # sit in <home>/lib/python<ver>/lib-dynload.
-    set(GC_DYNLOAD_SRC "${Python3_STDLIB}/lib-dynload")
-    if(EXISTS "${GC_DYNLOAD_SRC}")
-        add_custom_command(TARGET package-dir POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${GC_DYNLOAD_SRC}"
-                    "${GC_STAGE}/lib/python${GC_PY_VERSION_VALUE}/lib-dynload"
-            VERBATIM)
+    # holds only .py files; these cannot be imported from inside a zip, so they
+    # ship loose. Where they go is the one place the two layouts really differ:
+    # POSIX wants <home>/lib/python<ver>/lib-dynload, Windows wants <home>/DLLs.
+    if(WIN32)
+        # Python3_STDLIB is <prefix>/Lib on Windows, so the .pyd directory is
+        # its sibling. Fatal if absent: without it the package has no zlib and
+        # no _socket, and every failure surfaces later as a puzzling ImportError.
+        get_filename_component(GC_PY_PREFIX "${Python3_STDLIB}" DIRECTORY)
+        set(GC_DYNLOAD_SRC "${GC_PY_PREFIX}/DLLs")
+        set(GC_DYNLOAD_DST "${GC_STAGE}/DLLs")
+        if(NOT IS_DIRECTORY "${GC_DYNLOAD_SRC}")
+            message(FATAL_ERROR
+                "No DLLs/ directory beside the Python stdlib at ${GC_PY_PREFIX}. "
+                "The packaged build would ship no extension modules.")
+        endif()
+
+        # vcruntime140*.dll sit in the prefix root next to python.exe. The
+        # runner has the MSVC redistributable installed; a user's machine may
+        # not, and that failure is a dialog at startup, not an error we can
+        # report.
+        file(GLOB GC_WIN_VCRUNTIME "${GC_PY_PREFIX}/vcruntime140*.dll")
+        foreach(dll ${GC_WIN_VCRUNTIME})
+            add_custom_command(TARGET package-dir POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${dll}" "${GC_STAGE}/"
+                VERBATIM)
+        endforeach()
+    else()
+        set(GC_DYNLOAD_SRC "${Python3_STDLIB}/lib-dynload")
+        set(GC_DYNLOAD_DST "${GC_STAGE}/lib/python${GC_PY_VERSION_VALUE}/lib-dynload")
+        if(NOT IS_DIRECTORY "${GC_DYNLOAD_SRC}")
+            message(FATAL_ERROR
+                "No lib-dynload beside the Python stdlib at ${Python3_STDLIB}. "
+                "The packaged build would ship no extension modules.")
+        endif()
     endif()
+
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${GC_DYNLOAD_SRC}" "${GC_DYNLOAD_DST}"
+        VERBATIM)
 endif()
 
 # --- SDL3 ------------------------------------------------------------------
@@ -123,16 +154,30 @@ if(CMAKE_CROSSCOMPILING)
             VERBATIM)
     endforeach()
 elseif(WIN32)
-    if(Python3_RUNTIME_LIBRARY_RELEASE)
-        add_custom_command(TARGET package-dir POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${Python3_RUNTIME_LIBRARY_RELEASE}" "${GC_STAGE}/"
-            VERBATIM)
-    else()
-        message(WARNING
-            "Python3_RUNTIME_LIBRARY_RELEASE is unset: the packaged Windows "
-            "build will have no python3XX.dll and will not start.")
+    # python3XX.dll lives in the prefix root beside python.exe -- the same
+    # place DLLs/ and vcruntime140.dll came from. Taken from there rather than
+    # from Python3_RUNTIME_LIBRARY_RELEASE, which FindPython does not promise
+    # to set and which used to leave this a warning and the package unbootable.
+    set(GC_PY_DLL "${GC_PY_PREFIX}/python${GC_PY_TAG_VALUE}.dll")
+    if(NOT EXISTS "${GC_PY_DLL}")
+        message(FATAL_ERROR
+            "No python${GC_PY_TAG_VALUE}.dll at ${GC_PY_PREFIX}. The packaged "
+            "build would have no interpreter and would not start.")
     endif()
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${GC_PY_DLL}" "${GC_STAGE}/"
+        VERBATIM)
+elseif(APPLE)
+    # Not a plain copy: on macOS the shipped dylib has to be renamed to
+    # @rpath and the executable rewritten to match, or the package only runs
+    # on the machine that built it. See cmake/MacRelocate.cmake.
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                -DEXE=${GC_STAGE}/gobboclippy
+                -DLIBDIR=${GC_STAGE}/lib
+                -P "${CMAKE_SOURCE_DIR}/cmake/MacRelocate.cmake"
+        VERBATIM)
 elseif(Python3_LIBRARY_RELEASE)
     add_custom_command(TARGET package-dir POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
