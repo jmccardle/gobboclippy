@@ -1,0 +1,11 @@
+build/
+build-*/
+deps/SDL/
+venv/
+__pycache__/
+*.pyc
+
+# Generated from assets/*.svg by tools/render_assets.py.
+# Tracked deliberately: the CI Windows and macOS runners have no SVG
+# rasteriser guaranteed, and the SVG remains the source of truth.
+!assets/*.png

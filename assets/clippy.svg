@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>gobboclippy</title>
+
+  <defs>
+    <linearGradient id="wire" x1="0" y1="0" x2="1" y2="0.35">
+      <stop offset="0"    stop-color="#eef2f8"/>
+      <stop offset="0.40" stop-color="#a8b8cd"/>
+      <stop offset="1"    stop-color="#56677e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- The wire: one continuous stroke. Inner arm up, over the top bend,
+       down the middle arm, around the bottom bend, up the outer arm.
+       Drawn twice -- dark stroke underneath acts as the outline. -->
+  <g transform="translate(6,-6)" fill="none" stroke-linecap="round">
+    <path d="M 112,170 V 78 A 22,22 0 0 1 156,78 V 186 A 34,34 0 0 1 88,186 V 62"
+          stroke="#28313d" stroke-width="23"/>
+    <path d="M 112,170 V 78 A 22,22 0 0 1 156,78 V 186 A 34,34 0 0 1 88,186 V 62"
+          stroke="url(#wire)" stroke-width="15"/>
+  </g>
+
+  <!-- Eyebrows, in the clear band between the top bend and the eyes -->
+  <g stroke="#28313d" stroke-width="6" stroke-linecap="round">
+    <path d="M 103,92 L 128,86"/>
+    <path d="M 152,86 L 177,92"/>
+  </g>
+
+  <!-- Eyes -->
+  <g>
+    <circle cx="118" cy="118" r="19" fill="#fdfdfd" stroke="#28313d" stroke-width="5"/>
+    <circle cx="162" cy="118" r="19" fill="#fdfdfd" stroke="#28313d" stroke-width="5"/>
+    <circle cx="123" cy="122" r="8" fill="#16324f"/>
+    <circle cx="167" cy="122" r="8" fill="#16324f"/>
+    <circle cx="126" cy="118" r="3" fill="#ffffff"/>
+    <circle cx="170" cy="118" r="3" fill="#ffffff"/>
+  </g>
+</svg>

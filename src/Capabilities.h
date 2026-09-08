@@ -1,0 +1,35 @@
+#pragma once
+#include <string>
+#include <vector>
+
+#include <SDL3/SDL.h>
+
+// What the platform actually gave us, as opposed to what we asked for.
+//
+// Every field is determined one of two ways:
+//   granted  -- SDL_GetWindowFlags() readback after window creation
+//   backend  -- whether the active SDL video driver implements the flag at all
+//
+// The second matters because SDL keeps a requested flag in the window's flag
+// set even when the backend has no code for it. Wayland and SDL_WINDOW_
+// ALWAYS_ON_TOP is the case that bites: the flag reads back as set, and the
+// window still does not stay on top. Reporting only the readback would be a
+// lie, so we cross-check against a table derived from SDL's own sources.
+struct Capabilities {
+    std::string platform;       // SDL_GetPlatform()
+    std::string video_driver;   // SDL_GetCurrentVideoDriver()
+
+    bool borderless     = false;
+    bool always_on_top  = false;
+    bool transparent    = false;
+    bool skip_taskbar   = false;
+    bool tray           = false;
+
+    // Human-readable degradations, e.g. why always_on_top is false.
+    std::vector<std::string> notes;
+
+    // Fill in everything except `tray`, which Tray::create() sets.
+    static Capabilities probe(SDL_Window* window, SDL_WindowFlags requested);
+
+    std::string report() const;   // multi-line, for --capabilities and the log
+};

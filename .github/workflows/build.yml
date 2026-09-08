@@ -1,0 +1,92 @@
+name: build
+
+# Native builds on each target. Cross-compiling is available for local
+# iteration (see docs/cross-compile.md) but CI builds natively, because that is
+# the only way to produce a macOS package at all and it keeps the Windows
+# Python situation to "whatever setup-python installed".
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Linux,   os: ubuntu-22.04 }
+          - { name: Windows, os: windows-2022 }
+          - { name: macOS,   os: macos-14 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # SDL3 builds these from source on Linux; without them the X11 and
+      # Wayland backends are silently omitted and the window has no way to be
+      # borderless or transparent.
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev \
+            wayland-protocols libdecor-0-dev libgtk-3-dev \
+            libayatana-appindicator3-dev libasound2-dev libpulse-dev
+
+      - name: Render assets
+        run: |
+          python -m pip install --quiet cairosvg
+          python tools/render_assets.py 256
+        shell: bash
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release -j 4
+
+      - name: Package
+        run: cmake --build build --config Release --target package
+
+      # Proves the packaged tree is relocatable and uses its own bundled
+      # Python, rather than the runner's. Headless, so it exercises startup
+      # and the capability probe but not rendering.
+      - name: Smoke test
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y xvfb
+          cd build/stage/gobboclippy-*-Linux
+          xvfb-run -a ./gobboclippy --capabilities
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gobboclippy-${{ matrix.name }}
+          path: |
+            build/*.tar.gz
+            build/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true
