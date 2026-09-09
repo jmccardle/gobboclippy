@@ -85,6 +85,184 @@ pos = clippy.position()
 # as a pair of ints rather than exactly what was asked for.
 check("position() returns a pair", len(pos), 2)
 
+# Resizing has to be observable immediately: alignment is computed from this,
+# so a stale answer silently puts every aligned drawable in the wrong place.
+clippy.set_size(320, 240)
+check("set_size is observable at once", clippy.size(), (320, 240))
+
+x, y, dw, dh = clippy.display_bounds()
+check("display work area is positive", dw > 0 and dh > 0, True)
+
+# --- textures ---------------------------------------------------------------
+tex = clippy.Texture("clip_body.png")
+check("whole-image texture is one frame", tex.sprite_count, 1)
+
+strip = clippy.Texture("eyes.png", 48, 48)
+check("strip cell size", (strip.sprite_width, strip.sprite_height), (48, 48))
+check("strip frame count", strip.sprite_count, 5)
+
+try:
+    clippy.Texture("eyes.png", 50, 50)
+except OSError as exc:
+    clippy.log(f"PASS  indivisible cell size raises OSError ({str(exc)[:40]}...)")
+else:
+    FAILURES.append("Texture() accepted a cell size that does not divide the image")
+
+try:
+    clippy.Texture("does_not_exist.png")
+except OSError:
+    clippy.log("PASS  missing texture raises OSError")
+else:
+    FAILURES.append("Texture() accepted a missing file")
+
+# --- the tree ---------------------------------------------------------------
+body = clippy.Sprite(texture=tex, origin=(128.0, 226.0), name="clip")
+eye = clippy.Sprite(texture=strip, pos=(-10.0, -108.0), origin=(24.0, 24.0),
+                    parent=body, name="eye")
+brow = clippy.Sprite(texture=clippy.Texture("brow.png"), pos=(-2.5, -29.0),
+                     origin=(16.0, 8.0), parent=eye, name="brow")
+
+check("parent link", eye.parent.name, "clip")
+check("children collection", len(body.children), 1)
+check("grandchild", len(eye.children), 1)
+
+# Children accumulate their parents' positions, and nothing else.
+body.pos = (100.0, 200.0)
+check("global position sums the chain", brow.global_pos,
+      (100.0 - 10.0 - 2.5, 200.0 - 108.0 - 29.0))
+
+# The point of the whole exercise: scaling a parent must not move or resize
+# its children. If this ever regresses, the paperclip stretches the eyes.
+before_bounds = eye.bounds
+before_global = eye.global_pos
+body.scale = (0.5, 2.0)
+check("child bounds ignore parent scale", eye.bounds, before_bounds)
+check("child position ignores parent scale", eye.global_pos, before_global)
+body.scale = 1.0
+
+# A cycle would make the render walk non-terminating, so it is refused.
+try:
+    body.parent = brow
+except ValueError:
+    clippy.log("PASS  reparenting into a cycle raises ValueError")
+else:
+    FAILURES.append("a drawable was allowed to become its own descendant's child")
+
+clippy.stage.append(body)
+check("stage holds the root", len(clippy.stage), 1)
+check("stage membership", body in clippy.stage, True)
+
+# --- alignment --------------------------------------------------------------
+w, h = clippy.size()
+box = clippy.Sprite(texture=strip, align=clippy.Align.BOTTOM_RIGHT, margin=8.0)
+clippy.stage.append(box)
+bx, by, bw, bh = box.bounds
+check("bottom-right alignment", (round(bx + bw + 8), round(by + bh + 8)), (w, h))
+
+box.align = clippy.Align.TOP_CENTER
+bx, by, bw, bh = box.bounds
+check("top-centre alignment", (round(bx + bw / 2), round(by - 8)), (w // 2, 0))
+
+try:
+    box.align = "NOT_AN_ALIGNMENT"
+except ValueError:
+    clippy.log("PASS  unknown alignment raises ValueError")
+else:
+    FAILURES.append("align accepted a name that does not exist")
+
+# A child aligns inside its parent's *box*, not against its parent's pivot --
+# which matters exactly when the parent has a non-zero origin, as `body` does.
+inner = clippy.Sprite(texture=strip, parent=body, align=clippy.Align.TOP_LEFT)
+px, py, _, _ = body.bounds
+ix, iy, _, _ = inner.global_bounds
+check("child aligns to the parent's box corner", (round(ix), round(iy)),
+      (round(px), round(py)))
+inner.remove()
+
+# --- animation --------------------------------------------------------------
+anim = eye.animate("sprite_index", [0, 1, 2, 3, 4], 0.5)
+check("animate returns a handle", anim.property, "sprite_index")
+check("animation starts incomplete", anim.is_complete, False)
+
+anim.complete()
+check("complete() finishes it", anim.is_complete, True)
+check("frame sequence ends on its last frame", eye.sprite_index, 4)
+
+# A misspelled property would otherwise run to completion having done nothing.
+try:
+    eye.animate("sprite_indx", 3, 0.1)
+except ValueError:
+    clippy.log("PASS  animate() rejects an unknown property")
+else:
+    FAILURES.append("animate() accepted a property that does not exist")
+
+try:
+    eye.animate("x", 10.0, 0.1, easing="no_such_easing")
+except ValueError:
+    clippy.log("PASS  animate() rejects an unknown easing")
+else:
+    FAILURES.append("animate() accepted an easing that does not exist")
+
+# conflict_mode='error' has to actually refuse rather than quietly replace.
+eye.animate("y", -50.0, 5.0)
+try:
+    eye.animate("y", 50.0, 5.0, conflict_mode="error")
+except RuntimeError:
+    clippy.log("PASS  conflict_mode='error' refuses a second animation")
+else:
+    FAILURES.append("conflict_mode='error' allowed two animations on one property")
+
+# delta targets are relative to wherever the property started.
+brow.rotation = 10.0
+d = brow.animate("rotation", 5.0, 1.0, delta=True)
+d.complete()
+check("delta animation is relative", round(brow.rotation), 15)
+
+check("easing enum is ordered", int(clippy.Easing.LINEAR), 0)
+check("easing enum has the ping-pong curves",
+      hasattr(clippy.Easing, "PING_PONG_EASE_IN_OUT"), True)
+
+# --- text -------------------------------------------------------------------
+font = clippy.Font("JetBrainsMono.ttf")
+one_w, one_h = font.measure("MM", 20)
+two_w, two_h = font.measure("MM\nMM", 20)
+check("measure grows with lines", round(two_h), round(one_h * 2))
+check("measure is per-line for width", round(two_w), round(one_w))
+
+cap = clippy.Caption(text="hello", font=font, font_size=20, fill_color=(1, 2, 3))
+clippy.stage.append(cap)
+check("caption reports its size", cap.text_size[0] > 0, True)
+check("caption colour round-trips", cap.fill_color, (1, 2, 3, 255))
+
+grew = cap.text_size[0]
+cap.text = "hello there"
+check("caption remeasures on new text", cap.text_size[0] > grew, True)
+
+# ASCII-only coverage is a stated limit, so it has to be observable rather
+# than a character that quietly vanishes.
+cap.text = "ok — dash"
+check("out-of-range glyphs are counted", cap.skipped_glyphs, 1)
+
+try:
+    clippy.Font("does_not_exist.ttf")
+except OSError:
+    clippy.log("PASS  missing font raises OSError")
+else:
+    FAILURES.append("Font() accepted a missing file")
+
+try:
+    clippy.Caption(text="x", font=clippy.Font("clippy.png"))
+except OSError:
+    clippy.log("PASS  a non-font file raises OSError")
+else:
+    FAILURES.append("Font() accepted a file that is not a font")
+
+# --- teardown ---------------------------------------------------------------
+cap.remove()
+check("remove() takes it off the stage", cap in clippy.stage, False)
+clippy.stage.clear()
+check("clear() empties the stage", len(clippy.stage), 0)
+
 # --- result ----------------------------------------------------------------
 if FAILURES:
     clippy.log(f"{len(FAILURES)} FAILURE(S)")

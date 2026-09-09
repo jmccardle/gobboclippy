@@ -11,14 +11,17 @@
 #include <cstring>
 #include <string>
 
+#include "Animation.h"
 #include "App.h"
 #include "AppPaths.h"
+#include "Drawable.h"
 #include "PyClippy.h"
 
 namespace {
 
 struct Options {
-    int         size            = 256;
+    int         width           = 256;
+    int         height          = 256;
     std::string script;                 // empty -> scripts/clippy.py
     bool        print_caps_only = false;
 };
@@ -64,7 +67,7 @@ void usage(const char* argv0)
         "\n"
         "Usage: %s [options]\n"
         "\n"
-        "  --size N          Window edge length in pixels (default 256)\n"
+        "  --size N | WxH    Window size in pixels (default 256, i.e. 256x256)\n"
         "  --script PATH     Python entry point (default scripts/clippy.py)\n"
         "  --capabilities    Print the platform capability report and exit\n"
         "  --version         Print version and exit\n"
@@ -94,11 +97,23 @@ bool parseArgs(int argc, char** argv, Options& o)
             o.print_caps_only = true;
         } else if (!std::strcmp(a, "--size")) {
             const char* v = next("--size"); if (!v) return false;
-            o.size = std::atoi(v);
-            if (o.size < 32 || o.size > 2048) {
-                std::fprintf(stderr, "--size must be between 32 and 2048\n");
+
+            // "N" is square; "WxH" is not. Parsed strictly rather than with
+            // atoi's habit of reading "256xyz" as 256 and saying nothing.
+            int w = 0, h = 0;
+            char tail = 0;
+            const int fields = std::sscanf(v, "%d x %d %c", &w, &h, &tail);
+            if (fields == 1)      h = w;
+            else if (fields != 2) {
+                std::fprintf(stderr, "--size takes N or WxH, e.g. 256 or 300x360\n");
                 return false;
             }
+            if (w < 32 || w > 2048 || h < 32 || h > 2048) {
+                std::fprintf(stderr, "--size edges must be between 32 and 2048\n");
+                return false;
+            }
+            o.width  = w;
+            o.height = h;
         } else if (!std::strcmp(a, "--script")) {
             const char* v = next("--script"); if (!v) return false;
             o.script = v;
@@ -343,10 +358,11 @@ int main(int argc, char** argv)
     }
 
     App app;
-    app.size   = opts.size;
+    app.width  = opts.width;
+    app.height = opts.height;
     app.script = opts.script.empty() ? AppPaths::script("clippy.py") : opts.script;
 
-    if (!app.window.create(app.size, err)) {
+    if (!app.window.create(app.width, app.height, err)) {
         std::fprintf(stderr, "%s\n", err.c_str());
         SDL_Quit();
         return 1;
@@ -410,6 +426,12 @@ int main(int argc, char** argv)
     // --- loop -------------------------------------------------------------
     // SDL_PollEvent also pumps the tray, so tray callbacks arrive on this
     // thread between iterations. No SDL_UpdateTrays() call is needed.
+    //
+    // Animations are driven by measured elapsed time rather than by a frame
+    // count, so a dropped frame shortens the next step instead of stretching
+    // the animation. The first frame's dt is zero by construction.
+    Uint64 previous_ns = SDL_GetTicksNS();
+
     while (app.running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -421,18 +443,40 @@ int main(int argc, char** argv)
                 // Closing the pet hides it; Exit in the tray is what quits.
                 app.setVisible(false);
                 break;
+            case SDL_EVENT_WINDOW_RESIZED:
+                // The stage's bounds are what alignment is measured against,
+                // so they follow the window rather than the request.
+                app.window.onResized();
+                break;
             default:
                 break;
             }
         }
 
-        PyClippy::fire("frame");
+        const Uint64 now_ns = SDL_GetTicksNS();
+        float dt = (float)((double)(now_ns - previous_ns) / 1.0e9);
+        previous_ns = now_ns;
+
+        // A long stall -- the machine slept, or a script blocked -- would
+        // otherwise complete every running animation in one step. Cap it at a
+        // few frames' worth: animations run slow through a hitch rather than
+        // teleporting, which is the lesser of the two wrong answers.
+        dt = SDL_min(dt, 0.1f);
+
+        AnimationManager::instance().update(dt);
+        PyClippy::fireFrame(dt);
 
         if (app.window.visible()) app.window.render();
         SDL_Delay(16);   // ~60fps ceiling; the pet is idle most of the time
     }
 
     PyClippy::fire("quit");
+
+    // Drop every animation before the interpreter goes: a completion callback
+    // holds a Python reference, and releasing one after Py_FinalizeEx is a
+    // use-after-free.
+    AnimationManager::instance().clear();
+    Stage::instance().clear();
 
     Py_FinalizeEx();
     app.tray.destroy();

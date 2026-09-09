@@ -1,12 +1,12 @@
 # Harvesting the McRogueFace sprite layer
 
-The character work — animation, speech bubbles, captions — is not written
-here. It exists already in [McRogueFace](https://github.com/jmccardle/McRogueFace)
-and the intent is to lift it rather than reimplement it. This document records
-the seam, so the base does not drift somewhere the harvest cannot follow.
+The character work — sprites, animation, text — is not written here. It exists
+already in [McRogueFace](https://github.com/jmccardle/McRogueFace) and the
+intent was to lift it rather than reimplement it.
 
-Nothing here is implemented yet. It is a plan, written down while the
-reconnaissance is fresh.
+**Steps 1–7 of the plan below have landed.** What follows records both what was
+taken and what was deliberately left, so the next pass does not re-litigate
+either.
 
 ## Why not just fork the engine
 
@@ -28,20 +28,39 @@ Its *window layer* is the wrong starting point:
 - there is no macOS target: zero `APPLE`/`darwin` references in
   `CMakeLists.txt` or `Makefile`
 
-So: take the drawables, leave the window.
+So: take the drawables, leave the window. That is what happened.
 
-## The seam
+## What came across
 
-`src/platform/SDL2Types.h` is a 1419-line reimplementation of `namespace sf`
-on top of SDL2, written so that game code compiles unchanged against either
-backend. That file is the gift. The drawable classes never touch SFML
-directly — they touch `sf::Texture`, `sf::Sprite`, `sf::Color` and friends,
-which `SDL2Types.h` already proves can be something else underneath.
+| here | from McRogueFace | note |
+|---|---|---|
+| `src/Easing.h/.cpp` | `EasingFunctions` in `Animation.cpp`, table from `PyEasing.cpp` | 36 curves, verbatim. Same names, same enum values. |
+| `src/Texture.h/.cpp` | `PyTexture` | Same atlas model. Loader swapped for the `stb_image` path already in `PetWindow.cpp`. |
+| `src/Drawable.h/.cpp` | `UIDrawable` | 2964 lines down to ~330. See the cuts below. |
+| `src/Sprite.h/.cpp` | `UISprite` | |
+| `src/Caption.h/.cpp` | `UICaption` | Rewritten on `stb_truetype`; see below. |
+| `src/Font.h/.cpp` | `PyFont` | Likewise. |
+| `src/Animation.h/.cpp` | `Animation` + `AnimationManager` | Including the property-lock conflict modes (`replace` / `queue` / `error`). |
+| `src/PyDraw.h/.cpp` | the `PyTypeObject`s inlined in each header above | Separated on purpose; see "One structural change". |
 
-The harvest is therefore: **port `SDL2Types.h` to SDL3, then move the
-drawables across mostly untouched.**
+The property names are the interface, and they are unchanged: `x`, `y`,
+`scale_x`, `scale_y`, `rotation`, `origin_x`, `opacity`, `z_index`,
+`sprite_index`, `text`, `font_size`, `fill_color`. An `animate()` call written
+against McRogueFace animates the same thing here.
 
-SDL2 → SDL3 is largely mechanical for the calls that file uses:
+### The seam, as predicted and as it turned out
+
+The plan was to port `src/platform/SDL2Types.h` — McRogueFace's 1419-line
+reimplementation of `namespace sf` over SDL2 — to SDL3, then move the drawables
+across against it mostly untouched.
+
+**That layer was not needed, and not writing it was the right call.** The
+drawables here touch about a dozen SFML types, and SDL3 already supplies the
+value types among them: `sf::Vector2f` is `SDL_FPoint`, `sf::Color` is
+`SDL_Color`, `sf::FloatRect` is `SDL_FRect`. What remained was `sf::Sprite` and
+`sf::Text`, and both are *behaviour* rather than data — a compatibility shim
+for them would have been a reimplementation wearing a different name. The
+SDL2→SDL3 call mapping in the original plan held up exactly as written:
 
 | SDL2 | SDL3 |
 |---|---|
@@ -50,71 +69,124 @@ SDL2 → SDL3 is largely mechanical for the calls that file uses:
 | `SDL_Rect` in render calls | `SDL_FRect` |
 | `SDL_QueryTexture` | `SDL_GetTextureSize` |
 | `SDL_FreeSurface` | `SDL_DestroySurface` |
-| `SDL_RenderPresent` returns void | returns `bool` |
 | `SDL_bool` / `SDL_TRUE` | plain `bool` / `true` |
 
-Deliberately *not* written yet: a stub `SDL3Types.h` with nothing using it
-would be dead code. It gets written when the first drawable lands.
+### Text is the one genuine rewrite
 
-## Dependency order
+McRogueFace gets fonts from SFML, which rasterises and caches glyphs itself.
+SDL3 core has no text at all. SDL3_ttf pulls in FreeType, which is a real cost
+for the Windows cross-build, so `Font` is written on `stb_truetype` — from the
+same stb checkout `stb_image` already comes from, so it costs no new
+dependency.
 
-Measured coupling, so the order is not guesswork. `UISprite.cpp` alone
-includes `GameEngine.h`, `UIFrame.h`, `UICaption.h`, `PyGridData.h`,
-`PySceneObject.h`, `PyAlignment.h`, `PyShader.h` and
-`PyUniformCollection.h` — most of that is the `parent=` keyword-argument
-machinery, not drawing.
+`Font` packs ASCII 32–126 into one atlas per pixel size. `Caption` composites
+its glyphs into a private texture and then blits that like a sprite, which is
+`UIDrawable::enableRenderTexture()` applied where it earns its keep: rotation,
+per-axis scale and mirroring work on text for free, instead of needing a
+transformed quad per glyph.
 
-Take them in this order, cutting couplings as you go:
+Two things about that path are easy to get wrong and produce output that looks
+plausible rather than broken, so they are worth naming:
 
-1. **Value types** — `PyColor` (545), `PyVector` (724), `PyEasing` (264).
-   Self-contained, no cuts needed.
-2. **`SDL3Types.h`** — the port described above.
-3. **`PyTexture`** (668) — swap its loader for the `stb_image` path already
-   in `PetWindow.cpp`.
-4. **`UIDrawable`** (2964) — the base class. This is where the `parent=`
-   coupling lives; cut `PyGridData` and `PySceneObject` out of it, since
-   there are no grids or scenes here.
-5. **`UISprite`** (1054) — after step 4 this is nearly free.
-6. **`UICaption`** (1135) — brings `PyFont` (136) and text rendering. This is
-   what speech bubbles need.
-7. **`Animation`** (1528) + `PyTimer` — the easing/animation system, which is
-   what makes it a character rather than a picture.
+- a texture composited through a render target holds **premultiplied** alpha.
+  Blitting it as though it were straight multiplies by alpha a second time —
+  pale text goes muddy, and it gets *brighter* as it fades out. `Caption` uses
+  `SDL_BLENDMODE_BLEND_PREMULTIPLIED` and folds the fade into the colour
+  modulation, because SDL modulates colour and alpha independently.
+- with oversampling on, a glyph's rect **in the atlas** is larger than the rect
+  it is drawn into. `stbtt_GetPackedQuad` is what reconciles the two; using the
+  packed rect for both draws every glyph at double width, overlapping its
+  neighbours.
 
-Steps 1–5 are the minimum for animated sprites. Step 6 unlocks speech
-bubbles. Roughly 8k lines total, most of it moved rather than written.
+## One structural change worth keeping
 
-## Things to cut, not port
+McRogueFace puts each drawable's `PyTypeObject` in the same header as the class
+it wraps, so `UISprite.h` includes `Python.h`. Here the Python layer is one
+file, `src/PyDraw.cpp`, and `Drawable`, `Sprite`, `Caption`, `Texture`, `Font`
+and `Animation` compile with no `Python.h` in sight.
 
-- **`parent=` kwarg machinery.** It exists to attach drawables to Grids,
-  GridViews and Scenes. None of those are here.
-- **Shaders** (`PyShader`, `PyUniformCollection`). GLSL ES 2 shader support is
-  an engine feature; a paperclip does not need it.
+That matches the shape the rest of this project already has — the host is a
+library with a scripting layer on top, not a Python program — and it means the
+drawing core could carry a CLI, a test harness or a different binding without
+the interpreter coming along.
+
+## One behavioural difference, on purpose
+
+**Children inherit their parent's translation and opacity. They do not inherit
+its scale or its rotation.**
+
+That is what makes "stretch the paperclip without distorting the eyes" a
+one-line animation instead of a counter-transform on every child, and it is the
+whole reason the character is composed from parts rather than drawn as one
+image. Opacity multiplies down the tree so that fading the character out is one
+call on the root.
+
+McRogueFace's `get_global_position()` already sums positions only; this makes
+that the documented contract rather than an implementation detail, and
+`scripts/smoke_test.py` asserts it.
+
+## Cut, not ported
+
+As planned:
+
+- **the `parent=` kwarg machinery.** It exists there to attach drawables to
+  Grids, GridViews and Scenes. What is kept is the plain parent/child tree,
+  which is much smaller without those.
+- **shaders** (`PyShader`, `PyUniformCollection`). A paperclip does not need
+  GLSL ES 2.
 - **ImGui.** Already excluded from McRogueFace's own SDL2 builds.
-- **`Scene` / `PySceneObject`.** A desktop pet has one surface. A flat list of
-  drawables replaces the scene graph.
+- **`Scene` / `PySceneObject`.** A desktop pet has one surface. `Stage` — a
+  flat list of roots plus the window bounds that alignment is measured against
+  — replaces the scene graph in about 40 lines.
+
+And two more, decided during the port:
+
+- **`PythonObjectCache`.** McRogueFace keeps a serial-number registry so that
+  looking a drawable up twice returns the same Python object, preserving
+  subclass identity. That is several hundred lines to solve a problem this API
+  does not have: all state lives on the C++ object, so two wrappers around one
+  `shared_ptr` behave identically. The only visible difference is that
+  `stage[0] is stage[0]` is `False`. If Python subclasses of `Sprite` ever need
+  to carry their own attributes, this is the thing to bring across.
+- **the dirty-flag propagation** (`markContentDirty` / `markCompositeDirty` and
+  the parent invalidation chain). It exists to avoid re-compositing frames of
+  cached render textures. There is one cached texture here, inside `Caption`,
+  and it has a plain local dirty flag.
+
+## Still not here
+
+- **speech bubbles.** A `Caption` on a transparent window sits on whatever the
+  user's wallpaper happens to be, so `scripts/clippy.py` draws its text twice,
+  offset, as a drop shadow. A real bubble needs a nine-slice `Frame`, which is
+  `UIFrame` — the next thing to harvest if it is wanted.
+- **input.** `UIDrawable`'s `click_at` / hover dispatch was cut with the rest.
+  The window is not click-through and has no hit testing; see the README.
+- **a second window.** Nothing assumes exactly one, and nothing should start
+  to. `Stage` is a singleton because there is one; if a bubble becomes its own
+  borderless window, that is the assumption to revisit first.
 
 ## What this base must keep true
 
-For the above to stay cheap, three things about the current code should not
-change:
+For the rest to stay cheap:
 
 1. **The window is not the renderer.** `PetWindow` owns SDL3 window flags and
-   nothing about how sprites are drawn. Drawables will render into its
-   `SDL_Renderer`, not replace it.
-2. **The Python module is additive.** `clippy` is free functions over the
-   host. Harvested types register alongside them as new types; they do not
-   need `clippy.show()` to change shape.
-3. **A second window is cheap.** Speech bubbles are a second borderless,
-   transparent, always-on-top window positioned relative to the first — the
-   same `PetWindow` with a different sprite and a `setPosition` call from the
-   main loop. Nothing in the current design assumes exactly one window, and
-   nothing should start to.
+   publishes its `SDL_Renderer` on the `Stage`. Drawables render into it; they
+   do not replace it.
+2. **The Python module is additive.** `clippy` is free functions over the host,
+   and the harvested types registered alongside them. `clippy.show()` did not
+   change shape when they landed.
+3. **Alignment is measured against the stage, and the stage follows the
+   window.** `SDL_SetWindowSize` is a request, not a change — a hidden X11
+   window keeps its old size until it is mapped. `PetWindow::setSize` syncs,
+   and `SDL_EVENT_WINDOW_RESIZED` is handled, so nothing aligns against a size
+   the window does not have.
 
 ## Also worth stealing
 
-`McRogueFace/src/PathProvider.cpp` and, from the Electron reference,
-per-display window placement with re-resolution when the display set changes,
-plus work-area clamping. Applies regardless of toolkit, and this base does not
-have it — `scripts/clippy.py` currently hardcodes a 1920×1080 assumption in
-`place_bottom_right()`, which is a known gap: there is no display-geometry
-call in the `clippy` module yet.
+`McRogueFace/src/PathProvider.cpp`, and from the Electron reference,
+per-display window placement with re-resolution when the display set changes.
+
+The 1920×1080 assumption that used to be hardcoded in `place_bottom_right()` is
+gone: `clippy.display_bounds()` reports the work area of the display the pet is
+actually on. It earned itself immediately — this desktop's usable height is
+1052, not 1080, and the old code put the pet 28 px under the panel.

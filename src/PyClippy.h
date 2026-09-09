@@ -19,4 +19,9 @@ void bind(App* app);
 // Returns false if the callback raised; the traceback is printed.
 bool fire(const char* event);
 
+// The per-frame hook, which unlike the others is handed the seconds elapsed
+// since the previous frame -- the same number the animation system is ticked
+// with, so script-side timing and animation timing cannot drift apart.
+bool fireFrame(float dt);
+
 } // namespace PyClippy

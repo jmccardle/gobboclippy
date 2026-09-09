@@ -7,6 +7,8 @@
 
 #include "App.h"
 #include "AppPaths.h"
+#include "Drawable.h"
+#include "PyDraw.h"
 
 namespace {
 
@@ -105,6 +107,51 @@ PyObject* c_size(PyObject*, PyObject*)
     return Py_BuildValue("(ii)", w, h);
 }
 
+PyObject* c_set_size(PyObject*, PyObject* args)
+{
+    App* a = app_or_error(); if (!a) return nullptr;
+    int w, h;
+    if (!PyArg_ParseTuple(args, "ii:set_size", &w, &h)) return nullptr;
+    if (w < 32 || h < 32 || w > 4096 || h > 4096) {
+        PyErr_Format(PyExc_ValueError,
+                     "set_size(%d, %d): each edge must be between 32 and 4096",
+                     w, h);
+        return nullptr;
+    }
+    std::string err;
+    if (!a->window.setSize(w, h, err)) {
+        PyErr_SetString(PyExc_RuntimeError, err.c_str());
+        return nullptr;
+    }
+    Py_RETURN_NONE;
+}
+
+// The work area of the display the pet is currently on: the screen minus the
+// panels and docks the window manager reserves.
+//
+// scripts/clippy.py used to assume 1920x1080 because the host had no way to
+// answer this. Guessing a screen size is the kind of plausible-looking default
+// that puts the pet off the edge of somebody else's monitor.
+PyObject* c_display_bounds(PyObject*, PyObject*)
+{
+    App* a = app_or_error(); if (!a) return nullptr;
+
+    const SDL_DisplayID id = a->window.handle()
+        ? SDL_GetDisplayForWindow(a->window.handle())
+        : SDL_GetPrimaryDisplay();
+    if (!id) {
+        PyErr_SetString(PyExc_RuntimeError, SDL_GetError());
+        return nullptr;
+    }
+
+    SDL_Rect r;
+    if (!SDL_GetDisplayUsableBounds(id, &r)) {
+        PyErr_SetString(PyExc_RuntimeError, SDL_GetError());
+        return nullptr;
+    }
+    return Py_BuildValue("(iiii)", r.x, r.y, r.w, r.h);
+}
+
 PyObject* c_capabilities(PyObject*, PyObject*)
 {
     App* a = app_or_error(); if (!a) return nullptr;
@@ -185,8 +232,14 @@ PyMethodDef kMethods[] = {
     {"position",     c_position,     METH_NOARGS,  "Window position as (x, y)."},
     {"set_position", c_set_position, METH_VARARGS, "set_position(x, y)"},
     {"size",         c_size,         METH_NOARGS,  "Window size as (w, h)."},
+    {"set_size",     c_set_size,     METH_VARARGS, "set_size(w, h) -> resize the window; the stage follows."},
+    {"display_bounds", c_display_bounds, METH_NOARGS,
+     "Usable bounds of the display the pet is on, as (x, y, w, h)."},
     {"capabilities", c_capabilities, METH_NOARGS,  "What the platform actually granted, as a dict."},
-    {"on",           c_on,           METH_VARARGS, "on(event, fn) -> register a hook: 'show', 'hide', 'quit', 'frame'."},
+    {"on",           c_on,           METH_VARARGS,
+     "on(event, fn) -> register a hook: 'show', 'hide', 'quit', 'frame'.\n"
+     "'frame' is called with the seconds since the last frame; the others "
+     "take no arguments."},
     {"log",          c_log,          METH_VARARGS, "log(msg) -> write to the SDL log."},
     {nullptr, nullptr, 0, nullptr}
 };
@@ -205,6 +258,17 @@ PyObject* moduleInit()
     PyObject* m = PyModule_Create(&kModule);
     if (!m) return nullptr;
     PyModule_AddStringConstant(m, "__version__", GC_VERSION);
+
+    // The harvested drawing layer registers alongside the free functions
+    // rather than replacing them: clippy.show() keeps its shape.
+    std::string err;
+    if (!PyDraw::addToModule(m, err)) {
+        // An exception may already be set from deeper in; if not, say what
+        // went wrong here rather than returning a half-built module.
+        if (!PyErr_Occurred()) PyErr_SetString(PyExc_RuntimeError, err.c_str());
+        Py_DECREF(m);
+        return nullptr;
+    }
     return m;
 }
 
@@ -231,6 +295,20 @@ bool fire(const char* event)
     PyObject* result = PyObject_CallNoArgs(it->second);
     if (!result) {
         // Print rather than swallow: a broken hook must be visible.
+        PyErr_Print();
+        return false;
+    }
+    Py_DECREF(result);
+    return true;
+}
+
+bool fireFrame(float dt)
+{
+    auto it = g_hooks.find("frame");
+    if (it == g_hooks.end()) return true;
+
+    PyObject* result = PyObject_CallFunction(it->second, "f", (double)dt);
+    if (!result) {
         PyErr_Print();
         return false;
     }

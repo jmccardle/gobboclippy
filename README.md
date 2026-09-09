@@ -5,21 +5,29 @@ The C++ side owns the window, the tray icon and the event loop. Everything
 above that is Python, and the whole thing ships as a relocatable directory
 you unzip and run.
 
-This is the *canonical base* — the platform, build and distribution layer.
-Speech bubbles, animation and a config window are deliberately not here yet;
-see [docs/harvest.md](docs/harvest.md) for how they land on top.
+This is the *canonical base* — the platform, build and distribution layer —
+plus the sprite, animation and text subset harvested from
+[McRogueFace](https://github.com/jmccardle/McRogueFace) on top of it. Speech
+bubbles, input and a config window are deliberately still absent; see
+[docs/harvest.md](docs/harvest.md) for what was taken, what was cut, and why.
 
 ```
       ╭───────────────╮
       │  scripts/*.py │   behaviour, policy, stdlib, your libraries
       ├───────────────┤
-      │  clippy       │   extension module (src/PyClippy.cpp)
+      │  clippy       │   extension module (src/PyClippy.cpp, src/PyDraw.cpp)
+      ├───────────────┤
+      │  drawing      │   Texture, Font, Sprite, Caption, Animation, Easing
       ├───────────────┤
       │  C++ host     │   window flags, tray, event loop, paths
       ├───────────────┤
       │  SDL3         │   one dependency, four platforms
       ╰───────────────╯
 ```
+
+The drawing layer knows nothing about Python — only `PyDraw.cpp` includes
+`Python.h` — so it is a library the host happens to script, not a Python
+program.
 
 ## Why this shape
 
@@ -82,12 +90,19 @@ sudo apt install libgtk-3-0 libayatana-appindicator3-1
 
 ## Deliberately not implemented
 
-**Click-through.** The window is a 256px square that swallows clicks over its
-whole area, transparent corners included. Shaped input regions
+**Click-through, and input generally.** The window is a rectangle that swallows
+clicks over its whole area, transparent corners included. Shaped input regions
 (`wl_surface.set_input_region` and friends) are where the hover/drag/click
 state machine gets genuinely hard, and skipping them removes the worst
 cross-platform cliff. Transparency makes it *look* like a paperclip; it is
-still a rectangle.
+still a rectangle. McRogueFace's `click_at` / hover dispatch was cut along with
+it — drawables have no hit testing here.
+
+**Speech bubbles.** A `Caption` on a transparent window sits on whatever the
+user's wallpaper happens to be, so there is no background colour to pick a
+readable ink against; `scripts/clippy.py` draws its text twice, offset, as a
+drop shadow. A real bubble wants a nine-slice `Frame`, which is the next thing
+to harvest if it is wanted.
 
 ## Build
 
@@ -125,9 +140,9 @@ Produces a relocatable directory and an archive:
 
 ```
 gobboclippy-0.0.3-Linux/
-  gobboclippy            132 KB
+  gobboclippy            374 KB
   libSDL3.so.0           3.6 MB
-  assets/                clippy.svg + rendered PNG
+  assets/                SVG sources + rendered PNGs + JetBrains Mono
   scripts/               clippy.py
   licenses/              notices for everything redistributed here
   lib/
@@ -136,7 +151,7 @@ gobboclippy-0.0.3-Linux/
     python3.11/lib-dynload/        stdlib C extensions
 ```
 
-**17 MB on disk, 7.9 MB compressed.** The binary's RUNPATH is
+**18 MB on disk, 7.7 MB compressed.** The binary's RUNPATH is
 `$ORIGIN:$ORIGIN/lib`, and every runtime path is resolved from
 `SDL_GetBasePath()`, so the directory can be moved anywhere. Verified by
 running it from a different filesystem with `env -i`.
@@ -164,6 +179,22 @@ Three naming details that are easy to get wrong and fail silently:
 `scripts/clippy.py` is the entry point. The full standard library is
 available, plus anything you drop beside it.
 
+The shipped one is a tech demonstrator for the drawing layer, not a
+personality: a paperclip composed from parts that blinks, sways, breathes,
+squashes and stretches, lifts its eyes and eyebrows, slides in, and cycles
+captions that fade. It exercises every piece described below, and it is meant
+to be replaced.
+
+`scripts/smoke_test.py` is the non-interactive check — 50 assertions over the
+host API and the drawing layer, including that a parent's scale does not move
+or resize its children:
+
+```sh
+./gobboclippy --script scripts/smoke_test.py     # non-zero on any failure
+```
+
+### The host
+
 ```python
 import clippy
 
@@ -179,8 +210,9 @@ clippy.show()
 | `show()` / `hide()` / `toggle()` | window visibility |
 | `visible()` | `bool` |
 | `position()` / `set_position(x, y)` | window position |
-| `size()` | `(w, h)` |
-| `set_sprite(path)` | load a PNG; raises `OSError` if it cannot |
+| `size()` / `set_size(w, h)` | window size; the stage follows |
+| `display_bounds()` | `(x, y, w, h)` work area of the display the pet is on |
+| `set_sprite(path)` | load one PNG, contained and centred; `OSError` if it cannot |
 | `capabilities()` | the dict behind `--capabilities` |
 | `on(event, fn)` | `show`, `hide`, `quit`, `frame` |
 | `quit()` | shut down |
@@ -191,30 +223,115 @@ triggers them — tray, script, or window manager — so hooks fire on the
 transition only, and a hook that calls `show()` cannot recurse.
 
 `on()` rejects an unknown event name rather than registering a hook that would
-never fire.
+never fire. The `frame` hook is called with the seconds since the last frame —
+the same number the animations are ticked with, so script timing and animation
+timing cannot drift apart.
+
+`set_sprite()` is the one-image shortcut. Anything composed goes on the stage.
+
+### The stage
+
+`clippy.stage` is a live list of top-level drawables. A drawable's `.children`
+is the same kind of list. Both index, iterate, and support `append`, `remove`,
+`clear` and `in`.
+
+```python
+import clippy
+
+body = clippy.Sprite(texture=clippy.Texture("clip_body.png"),
+                     origin=(128, 226),            # pivot: bottom of the clip
+                     align=clippy.Align.TOP_CENTER, margin=30)
+clippy.stage.append(body)
+
+eye = clippy.Sprite(texture=clippy.Texture("eyes.png", 48, 48),  # 5-frame strip
+                    pos=(-10, -108), origin=(24, 24), parent=body)
+
+eye.animate("sprite_index", [0, 1, 2, 3, 4, 3, 2, 1, 0], 0.34)   # blink
+body.animate("scale_y", 1.22, 0.9, easing=clippy.Easing.EASE_OUT_ELASTIC)
+```
+
+`pos` is the pivot: the point `origin` of the content sits there, and rotation
+and scale happen about it. **Children inherit their parent's translation and
+opacity, never its scale or rotation** — which is what lets the paperclip
+stretch without distorting the eyes, and lets one `opacity` animation on the
+root fade the whole character.
+
+| type | |
+|---|---|
+| `Texture(path, sprite_width=0, sprite_height=0, smooth=True)` | a PNG, optionally sliced into a grid of frames; `0` means one frame |
+| `Font(path)` | a TrueType face; ASCII 32–126, rasterised on demand per size |
+| `Sprite(texture=, sprite_index=, ...)` | one frame of a texture |
+| `Caption(text=, font=, font_size=, fill_color=, ...)` | text; `\n` starts a line |
+| `Animation` | the handle `animate()` returns |
+
+Every drawable carries `pos`, `x`, `y`, `origin`, `scale` (per-axis; negative
+mirrors), `rotation`, `opacity`, `visible`, `z_index`, `name`, `parent`,
+`children`, `bounds`, `global_bounds`, `align`, `margin`, and the methods
+`animate()`, `realign()`, `move()`, `remove()`.
+
+```python
+d.animate(property, target, duration,
+          easing=None, delta=False, loop=False,
+          callback=None, conflict_mode="replace")
+```
+
+- `target` may be a number, **a list of ints** (a frame sequence, stepped not
+  interpolated), a 2-tuple (point), a 3/4-tuple (colour) or a `str`
+  (typewriter reveal).
+- `delta` makes the target relative to wherever the property started.
+- `easing` is a `clippy.Easing` member — 36 curves, including the `PING_PONG_*`
+  family, which return to their start so a `loop=True` animation has no seam.
+- `callback(drawable, property, final_value)` fires on completion.
+- `conflict_mode` decides what a second animation on the same property does:
+  `"replace"` (default), `"queue"`, or `"error"`.
+
+A misspelled property, easing or alignment raises rather than running to
+completion having changed nothing.
+
+`align` is a `clippy.Align` member — the nine corners, sides and centre —
+measured against the parent's bounds, or the window's for a top-level drawable.
+It is applied when set and on `realign()`, not continuously: a caption whose
+text changed has to be realigned.
 
 ## Assets
 
-`assets/clippy.svg` is the source of truth; the PNG is generated.
+`assets/*.svg` are the source of truth; the PNGs are generated. Each SVG is
+authored at its final pixel size — a sprite strip is as wide as its frames, not
+square — so the renderer reads width and height from the file.
 
 ```sh
-python tools/render_assets.py 256
+python tools/render_assets.py        # 1:1; pass a factor for a HiDPI variant
 ```
 
 Uses whichever rasteriser is installed (rsvg-convert, inkscape or
 ImageMagick) and reports which one. It errors rather than emitting a
 placeholder if none is available.
 
+`clippy.svg` is the whole character, and is the tray icon. It is also broken
+into the parts the demo composes — `clip_body.svg`, `eyes.svg` (a 5-frame blink
+strip), `brow.svg` (one brow; the other is the same sprite with `scale_x = -1`)
+— all drawn in the same 256×256 frame, so the offsets in `scripts/clippy.py`
+can be read straight off `clippy.svg`.
+
+`assets/JetBrainsMono.ttf` is shipped. It is JetBrains Mono 1.0.3 under
+Apache-2.0, the same font and version McRogueFace redistributes; its notice is
+beside it and in the package's `licenses/`.
+
 ## Layout
 
 | path | |
 |---|---|
 | `src/main.cpp` | CLI, init order, event loop |
-| `src/PetWindow.*` | SDL3 window flags, sprite, render |
+| `src/PetWindow.*` | SDL3 window flags, render, the one-image shortcut |
 | `src/Tray.*` | `SDL_Tray` menu: Show / Hide / Exit |
 | `src/Capabilities.*` | what the platform granted, and why not |
-| `src/PyClippy.*` | the `clippy` extension module |
 | `src/AppPaths.*` | exe-relative path resolution |
+| `src/PyClippy.*` | the `clippy` extension module: host calls |
+| `src/Drawable.*` | transform, tree, alignment, the property system, `Stage` |
+| `src/Sprite.*` `src/Caption.*` | the two drawables |
+| `src/Texture.*` `src/Font.*` | PNG atlases (stb_image), glyph atlases (stb_truetype) |
+| `src/Animation.*` `src/Easing.*` | the animation manager and 36 curves |
+| `src/PyDraw.*` | Python types for all of the above — the only file here that includes `Python.h` |
 | `cmake/Package.cmake` | the zip-and-ship staging tree |
 | `cmake/ZipStdlib.cmake` | stdlib zip construction |
 | `cmake/StripTree.cmake` | strip the staged binaries (Linux, Windows) |
@@ -224,12 +341,22 @@ placeholder if none is available.
 
 **Linux/X11 — working.** Build, capability probe, transparency, always-on-top,
 tray icon and menu, relocatable package, and the smoke test run from an
-extracted tarball with a scrubbed environment on the bundled interpreter.
+extracted tarball with a scrubbed environment on the bundled interpreter. The
+drawing layer — composed sprites, frame-sequence blinking, per-axis squash and
+stretch, eased motion, parented eyes and eyebrows, alignment, and faded text in
+the shipped font — is verified on screen and by the smoke test.
 
 **Windows — working, under wine.** Cross-compiled from Debian with mingw-w64.
 The packaged zip, freshly extracted, passes the same smoke test on its bundled
 Python 3.14: window, tray, transparency, always-on-top, sprite loading and the
 host API, all reporting `windows` as the video driver.
+
+The drawing layer cross-compiles and packages cleanly, but **that claim has not
+been re-verified on Windows since it landed** — it needs wine 10 or newer, and
+CI is the thing that has it. Nothing in `Drawable`, `Font` or `Animation` is
+platform-specific, and the whole text path is stb rather than a system library,
+so there is no known reason for it to differ; that is a reason to expect it to
+work, not evidence that it does.
 
 Tested under wine 10, not on real Windows hardware. That is a genuine gap —
 wine is not Windows — but it exercises the bundled interpreter, the stdlib zip
@@ -276,9 +403,10 @@ startup.
 
 MIT, © 2026 John McCardle. See [LICENSE](LICENSE).
 
-A packaged build redistributes three other projects in binary form, under
-their own terms: SDL3 (zlib), stb (MIT / public domain) and CPython (PSF-2.0).
-Their notices ship in `licenses/` inside the package, with an index:
+A packaged build redistributes four other works in binary form, under their own
+terms: SDL3 (zlib), stb (MIT / public domain), CPython (PSF-2.0) and JetBrains
+Mono (Apache-2.0). Their notices ship in `licenses/` inside the package, with
+an index:
 
 ```
 gobboclippy-0.0.3-Linux/
@@ -288,12 +416,17 @@ gobboclippy-0.0.3-Linux/
     SDL3-zlib.txt
     stb-MIT-or-public-domain.txt
     CPython-PSF.txt
+    JetBrainsMono-Apache-2.0.txt
 ```
 
-Each is copied from the tree it belongs to — the pinned SDL checkout, the
-pinned stb checkout, the interpreter being bundled — so a notice cannot
-describe a different version than the one shipped, and none of them is
-vendored into this repository. A missing notice is a configure error.
+The first four are copied from the tree each belongs to — the pinned SDL
+checkout, the pinned stb checkout, the interpreter being bundled — so a notice
+cannot describe a different version than the one shipped. A missing notice is a
+configure error.
+
+The font is the exception: a `.ttf` has no source tree to take a notice from,
+so its terms are vendored beside it at `assets/JetBrainsMono-LICENSE.txt` and
+copied into `licenses/` as well.
 
 On Windows that CPython notice matters more than the others: it carries
 "Additional Conditions for this Windows binary build", Microsoft's terms for

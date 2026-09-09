@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16" width="32" height="16">
+  <title>gobboclippy: one eyebrow</title>
+
+  <!-- Drawn rising to the right, which is the left brow. The right one is the
+       same sprite with scale_x = -1: a negative scale axis mirrors rather than
+       producing a negative-width rectangle, so one asset covers both. -->
+  <path d="M 4,12 L 28,6" fill="none"
+        stroke="#28313d" stroke-width="6" stroke-linecap="round"/>
+</svg>

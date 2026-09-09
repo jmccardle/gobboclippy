@@ -37,9 +37,14 @@ FetchContent_Declare(SDL3
     GIT_PROGRESS   TRUE
 )
 
-# stb_image: PNG decoding. SDL3 core ships no image loader and SDL3_image is a
-# heavier dependency than one header. McRogueFace's SDL2 backend uses stb too,
-# so this matches the code we intend to harvest later.
+# stb: PNG decoding (stb_image) and text rasterising (stb_truetype, which pulls
+# in stb_rect_pack for the glyph atlas). SDL3 core ships neither an image loader
+# nor any text, and SDL3_image + SDL3_ttf + FreeType is a far heavier dependency
+# than three headers -- particularly for the Windows cross-build.
+#
+# McRogueFace gets both from SFML instead, so this is the one part of the
+# harvest that is a rewrite rather than a move. Its SDL2 backend already uses
+# stb for images, so half of it was the intended path anyway.
 FetchContent_Declare(stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
     GIT_TAG        f0569113c93ad095470c54bf34a17b36646bbbb5
@@ -77,6 +82,18 @@ add_executable(gobboclippy
     src/PyClippy.cpp
     src/Capabilities.cpp
     src/AppPaths.cpp
+
+    # The drawing layer harvested from McRogueFace. Everything above this line
+    # is host; everything below it is the sprite/text/animation subset, and
+    # only PyDraw.cpp in it knows that Python exists.
+    src/Easing.cpp
+    src/Texture.cpp
+    src/Font.cpp
+    src/Drawable.cpp
+    src/Sprite.cpp
+    src/Caption.cpp
+    src/Animation.cpp
+    src/PyDraw.cpp
 )
 
 target_include_directories(gobboclippy PRIVATE src ${stb_SOURCE_DIR})

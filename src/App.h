@@ -13,7 +13,8 @@ struct App {
     bool      running = true;
 
     std::string script;     // scripts/clippy.py unless overridden
-    int         size   = 256;
+    int         width  = 256;
+    int         height = 256;
 
     // Keeps the tray menu in step with the window after any visibility change.
     void syncTray() { tray.setVisibleState(window.visible()); }

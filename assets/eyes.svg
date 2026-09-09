@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 48" width="240" height="48">
+  <title>gobboclippy: one eye, five frames of a blink</title>
+
+  <!-- A five-cell strip, 48x48 each, loaded as
+       clippy.Texture("eyes.png", 48, 48). Frame 0 is open and frame 4 is shut,
+       so the blink is animate("sprite_index", [0,1,2,3,4,3,2,1,0], ...) -- one
+       call, and the same call an image-generation pipeline's output would take.
+
+       Frames 1-3 are not a clipped copy of frame 0: the visible part of a
+       half-shut eye is a circular segment, so each is one closed path whose
+       stroke draws both the eyeball's edge and the eyelid across the chord.
+       Written out per frame rather than built from <use> and <clipPath>, so
+       the weakest rasteriser in tools/render_assets.py can still produce it. -->
+
+  <!-- frame 0: open -->
+  <circle cx="24" cy="24" r="19" fill="#fdfdfd" stroke="#28313d" stroke-width="5"/>
+  <circle cx="26" cy="27" r="8" fill="#16324f"/>
+  <circle cx="29" cy="23" r="3" fill="#ffffff"/>
+
+  <!-- frame 1: three-quarters, lid at y=13 -->
+  <path d="M 56.51,13 A 19,19 0 1 0 87.49,13 Z"
+        fill="#fdfdfd" stroke="#28313d" stroke-width="5" stroke-linejoin="round"/>
+  <circle cx="74" cy="28" r="8" fill="#16324f"/>
+  <circle cx="77" cy="24" r="2.5" fill="#ffffff"/>
+
+  <!-- frame 2: half, lid at y=20 -->
+  <path d="M 101.43,20 A 19,19 0 1 0 138.57,20 Z"
+        fill="#fdfdfd" stroke="#28313d" stroke-width="5" stroke-linejoin="round"/>
+  <circle cx="122" cy="30" r="7" fill="#16324f"/>
+
+  <!-- frame 3: nearly shut, lid on the equator -->
+  <path d="M 149,24 A 19,19 0 1 0 187,24 Z"
+        fill="#fdfdfd" stroke="#28313d" stroke-width="5" stroke-linejoin="round"/>
+  <circle cx="170" cy="32" r="5" fill="#16324f"/>
+
+  <!-- frame 4: shut -->
+  <path d="M 199,26 Q 216,34 233,26" fill="none"
+        stroke="#28313d" stroke-width="5" stroke-linecap="round"/>
+</svg>

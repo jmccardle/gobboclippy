@@ -1,13 +1,9 @@
 #include "PetWindow.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_PNG
-#include "stb_image.h"
+#include "Drawable.h"
 
-bool PetWindow::create(int size, std::string& error_out)
+bool PetWindow::create(int width, int height, std::string& error_out)
 {
-    m_size = size;
-
     const SDL_WindowFlags requested =
         SDL_WINDOW_BORDERLESS      |   // no titlebar
         SDL_WINDOW_ALWAYS_ON_TOP   |   // float over other windows
@@ -16,7 +12,7 @@ bool PetWindow::create(int size, std::string& error_out)
         SDL_WINDOW_NOT_FOCUSABLE   |   // never steal focus from the user's work
         SDL_WINDOW_HIDDEN;             // shown explicitly, after the first draw
 
-    m_window = SDL_CreateWindow("gobboclippy", size, size, requested);
+    m_window = SDL_CreateWindow("gobboclippy", width, height, requested);
     if (!m_window) {
         error_out = std::string("SDL_CreateWindow: ") + SDL_GetError();
         return false;
@@ -30,53 +26,74 @@ bool PetWindow::create(int size, std::string& error_out)
         return false;
     }
 
+    // Everything drawn on this stage -- textures, font atlases, the captions'
+    // private render targets -- is created against this renderer, including
+    // from Python, so the stage is where it is published.
+    Stage::instance().renderer = m_renderer;
+    syncStageSize();
+
     m_caps = Capabilities::probe(m_window, requested);
     return true;
 }
 
 void PetWindow::destroy()
 {
-    if (m_sprite)   { SDL_DestroyTexture(m_sprite);  m_sprite = nullptr; }
+    // The stage holds drawables that own textures made on this renderer, so it
+    // has to be emptied before the renderer goes.
+    Stage::instance().clear();
+    Stage::instance().renderer = nullptr;
+
+    m_sprite.reset();
     if (m_renderer) { SDL_DestroyRenderer(m_renderer); m_renderer = nullptr; }
-    if (m_window)   { SDL_DestroyWindow(m_window);   m_window = nullptr; }
+    if (m_window)   { SDL_DestroyWindow(m_window);     m_window   = nullptr; }
+}
+
+void PetWindow::syncStageSize()
+{
+    int w = 0, h = 0;
+    if (m_window) SDL_GetWindowSize(m_window, &w, &h);
+    Stage::instance().size = SDL_FPoint{(float)w, (float)h};
 }
 
 bool PetWindow::setSprite(const std::string& png_path, std::string& error_out)
 {
-    int w = 0, h = 0, channels = 0;
-    // Force 4 channels: we always want RGBA regardless of how the PNG was saved.
-    unsigned char* pixels = stbi_load(png_path.c_str(), &w, &h, &channels, 4);
-    if (!pixels) {
-        error_out = "stbi_load(" + png_path + "): " +
-                    (stbi_failure_reason() ? stbi_failure_reason() : "unknown");
-        return false;
-    }
-
-    SDL_Surface* surface = SDL_CreateSurfaceFrom(
-        w, h, SDL_PIXELFORMAT_RGBA32, pixels, w * 4);
-    if (!surface) {
-        error_out = std::string("SDL_CreateSurfaceFrom: ") + SDL_GetError();
-        stbi_image_free(pixels);
-        return false;
-    }
-
-    SDL_Texture* tex = SDL_CreateTextureFromSurface(m_renderer, surface);
-    SDL_DestroySurface(surface);
-    stbi_image_free(pixels);
-
-    if (!tex) {
-        error_out = std::string("SDL_CreateTextureFromSurface: ") + SDL_GetError();
-        return false;
-    }
-
-    // Nearest-neighbour keeps pixel art crisp; this is the equivalent of
-    // image-rendering: pixelated. Harmless for the smooth SVG-derived sprite.
-    SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
-    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-
-    if (m_sprite) SDL_DestroyTexture(m_sprite);
-    m_sprite = tex;
+    auto tex = Texture::load(m_renderer, png_path, 0, 0, error_out);
+    if (!tex) return false;
+    m_sprite = std::move(tex);
     return true;
+}
+
+bool PetWindow::setSize(int w, int h, std::string& error_out)
+{
+    if (!m_window) {
+        error_out = "setSize: no window";
+        return false;
+    }
+    if (!SDL_SetWindowSize(m_window, w, h)) {
+        error_out = std::string("SDL_SetWindowSize: ") + SDL_GetError();
+        return false;
+    }
+
+    // SDL_SetWindowSize is a request to the window manager, not a change. On
+    // X11 a hidden window's size does not take effect until it is mapped, so
+    // without this the very next SDL_GetWindowSize -- and every alignment
+    // computed from it -- still reports the old size and nothing says so.
+    //
+    // A failed sync is not fatal: SDL_EVENT_WINDOW_RESIZED still arrives later
+    // and onResized() picks the change up then. It is worth reporting, since
+    // anything aligned before that point lands against the old bounds.
+    if (!SDL_SyncWindow(m_window)) {
+        SDL_Log("setSize(%d, %d): window did not sync (%s); alignment will "
+                "catch up on the next resize event", w, h, SDL_GetError());
+    }
+
+    syncStageSize();
+    return true;
+}
+
+void PetWindow::onResized()
+{
+    syncStageSize();
 }
 
 void PetWindow::render()
@@ -85,7 +102,7 @@ void PetWindow::render()
 
     if (m_caps.transparent) {
         // Write alpha 0 rather than blending into it, so the compositor sees a
-        // genuinely empty buffer where the sprite is not drawn.
+        // genuinely empty buffer where nothing is drawn.
         SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_NONE);
         SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 0);
     } else {
@@ -94,14 +111,14 @@ void PetWindow::render()
                                m_fallback.b, 255);
     }
     SDL_RenderClear(m_renderer);
+    SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
+
+    int ww = 0, wh = 0;
+    SDL_GetWindowSize(m_window, &ww, &wh);
 
     if (m_sprite) {
-        SDL_SetRenderDrawBlendMode(m_renderer, SDL_BLENDMODE_BLEND);
-        float tw = 0, th = 0;
-        SDL_GetTextureSize(m_sprite, &tw, &th);
-
-        int ww = 0, wh = 0;
-        SDL_GetWindowSize(m_window, &ww, &wh);
+        const float tw = (float)m_sprite->spriteWidth();
+        const float th = (float)m_sprite->spriteHeight();
 
         // Contain: preserve aspect ratio, centre in the window.
         const float scale = SDL_min((float)ww / tw, (float)wh / th);
@@ -111,8 +128,13 @@ void PetWindow::render()
         dst.x = ((float)ww - dst.w) * 0.5f;
         dst.y = ((float)wh - dst.h) * 0.5f;
 
-        SDL_RenderTexture(m_renderer, m_sprite, nullptr, &dst);
+        SDL_RenderTexture(m_renderer, m_sprite->handle(), nullptr, &dst);
     }
+
+    // The stage draws in its own coordinates -- window pixels, origin top-left
+    // -- so SDL clips anything outside the window for us. That is what makes a
+    // slide-in animation a plain position tween.
+    Stage::instance().render(m_renderer);
 
     SDL_RenderPresent(m_renderer);
 }

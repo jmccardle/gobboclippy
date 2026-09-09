@@ -203,11 +203,17 @@ else()
     set(GC_PY_LICENSE "${Python3_STDLIB}/LICENSE.txt")
 endif()
 
+# The font is the one redistributed component that is vendored here rather than
+# fetched, because a .ttf has no source tree to take a notice from. Its terms
+# travel with it in assets/, and are copied into licences/ as well so the index
+# below can point at all four in one place.
 set(GC_NOTICES
     "${CMAKE_SOURCE_DIR}/LICENSE"    "gobboclippy-MIT.txt"
     "${SDL3_SOURCE_DIR}/LICENSE.txt" "SDL3-zlib.txt"
     "${stb_SOURCE_DIR}/LICENSE"      "stb-MIT-or-public-domain.txt"
     "${GC_PY_LICENSE}"               "CPython-PSF.txt"
+    "${CMAKE_SOURCE_DIR}/assets/JetBrainsMono-LICENSE.txt"
+                                     "JetBrainsMono-Apache-2.0.txt"
 )
 
 list(LENGTH GC_NOTICES _n)
@@ -236,17 +242,20 @@ set(GC_LICENSE_INDEX "${CMAKE_BINARY_DIR}/licenses-README.txt")
 file(WRITE "${GC_LICENSE_INDEX}"
 "gobboclippy ${PROJECT_VERSION} -- ${GC_PLATFORM}
 
-This package is MIT licensed and redistributes three other projects in binary
+This package is MIT licensed and redistributes four other works in binary
 form. Their notices are here in full.
 
   gobboclippy-MIT.txt             gobboclippy itself. MIT.
   SDL3-zlib.txt                   SDL3, the window/tray/event layer. zlib.
-  stb-MIT-or-public-domain.txt    stb_image, the PNG decoder. MIT or public
+  stb-MIT-or-public-domain.txt    stb_image and stb_truetype, the PNG decoder
+                                  and the text rasteriser. MIT or public
                                   domain, at your choice.
   CPython-PSF.txt                 the bundled interpreter and standard
                                   library, Python ${GC_PY_VERSION_VALUE}. PSF-2.0, plus the
                                   notices for the software CPython itself
                                   incorporates.
+  JetBrainsMono-Apache-2.0.txt    JetBrains Mono 1.0.3, the shipped typeface,
+                                  at assets/JetBrainsMono.ttf. Apache-2.0.
 ")
 if(WIN32)
     file(APPEND "${GC_LICENSE_INDEX}"
