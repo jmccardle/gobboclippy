@@ -45,7 +45,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.0.3  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.1.0  (SDL 3.4.16, Python 3.11)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -139,7 +139,7 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.0.3-Linux/
+gobboclippy-0.1.0-Linux/
   gobboclippy            374 KB
   libSDL3.so.0           3.6 MB
   assets/                SVG sources + rendered PNGs + JetBrains Mono
@@ -409,7 +409,7 @@ Mono (Apache-2.0). Their notices ship in `licenses/` inside the package, with
 an index:
 
 ```
-gobboclippy-0.0.3-Linux/
+gobboclippy-0.1.0-Linux/
   licenses/
     README.txt                    what each file covers
     gobboclippy-MIT.txt
