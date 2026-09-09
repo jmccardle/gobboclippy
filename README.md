@@ -346,29 +346,25 @@ drawing layer — composed sprites, frame-sequence blinking, per-axis squash and
 stretch, eased motion, parented eyes and eyebrows, alignment, and faded text in
 the shipped font — is verified on screen and by the smoke test.
 
-**Windows — working, under wine.** Cross-compiled from Debian with mingw-w64.
-The packaged zip, freshly extracted, passes the same smoke test on its bundled
-Python 3.14: window, tray, transparency, always-on-top, sprite loading and the
-host API, all reporting `windows` as the video driver.
+**Windows — working.** Built natively by CI on a hosted Windows runner, where
+the packaged zip is extracted and runs the full smoke test — the drawing layer
+included — on its bundled Python: window, tray, transparency, always-on-top,
+textures, the tree, animation and text, all reporting `windows` as the video
+driver. That is the authoritative check, and v0.1.0 passed it.
 
-The drawing layer cross-compiles and packages cleanly, but **that claim has not
-been re-verified on Windows since it landed** — it needs wine 10 or newer, and
-CI is the thing that has it. Nothing in `Drawable`, `Font` or `Animation` is
-platform-specific, and the whole text path is stb rather than a system library,
-so there is no known reason for it to differ; that is a reason to expect it to
-work, not evidence that it does.
+Locally the same tree cross-compiles from Debian with mingw-w64 and runs under
+wine, which is a convenience rather than proof — wine is not Windows — but it
+does exercise the bundled interpreter, the stdlib zip and the `.pyd` extension
+modules rather than only checking that the binary links. **Use wine 10 or
+newer**: wine 8.0 hands a piped process invalid standard handles, which stops
+CPython from starting at all, and the stock python.org `python.exe` fails there
+identically. `docs/cross-compile.md` has the details, along with the C runtime
+rules that the mingw/MSVC split imposes on `src/main.cpp`.
 
-Tested under wine 10, not on real Windows hardware. That is a genuine gap —
-wine is not Windows — but it exercises the bundled interpreter, the stdlib zip
-and the `.pyd` extension modules rather than only checking that the binary
-links. **Use wine 10 or newer**: wine 8.0 hands a piped process invalid
-standard handles, which stops CPython from starting at all, and the stock
-python.org `python.exe` fails there identically. `docs/cross-compile.md` has
-the details, along with the C runtime rules that the mingw/MSVC split imposes
-on `src/main.cpp`.
-
-**macOS — not built.** The only target that genuinely needs hardware we do not
-have; see `docs/macos.md` for the routes and what they cost.
+**macOS — working in CI, not buildable here.** Hosted arm64 runners build,
+relocate, sign and smoke-test the package; nothing about it can be reproduced
+on this machine, so every macOS change is verified only after it is pushed. See
+`docs/macos.md` for the routes and what they cost.
 
 **Wayland — untested, and expected to be partly broken.** SDL's Wayland
 backend has no `SetWindowAlwaysOnTop` hook at all, and `SDL_SetWindowAlwaysOnTop`
