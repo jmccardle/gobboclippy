@@ -47,7 +47,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.1.0  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.2.0  (SDL 3.4.16, Python 3.11)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -55,6 +55,7 @@ gobboclippy 0.1.0  (SDL 3.4.16, Python 3.11)
   transparent   : yes
   skip taskbar  : yes
   tray icon     : yes
+  microphone    : yes
 ```
 
 | | Windows | macOS | X11 | Wayland |
@@ -142,12 +143,12 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.1.0-Linux/
-  gobboclippy            395 KB
+gobboclippy-0.2.0-Linux/
+  gobboclippy            411 KB
   python3 -> gobboclippy          the same binary, dispatched on argv[0]
   libSDL3.so.0           3.6 MB
   assets/                SVG sources + rendered PNGs + JetBrains Mono
-  scripts/               clippy.py
+  scripts/               clippy.py, assistant.py, gobbo/
   licenses/              notices for everything redistributed here
   lib/
     libpython3.11.so.1.0 7.4 MB   the SONAME, not the linker name
@@ -617,7 +618,7 @@ still unverified.
 the packaged zip is extracted and runs the full smoke test — the drawing layer
 included — on its bundled Python: window, tray, transparency, always-on-top,
 textures, the tree, animation and text, all reporting `windows` as the video
-driver. That is the authoritative check, and v0.1.0 passed it.
+driver. That is the authoritative check, and v0.2.0 passed it.
 
 Locally the same tree cross-compiles from Debian with mingw-w64 and runs under
 wine, which is a convenience rather than proof — wine is not Windows — but it
@@ -676,7 +677,7 @@ Mono (Apache-2.0). Their notices ship in `licenses/` inside the package, with
 an index:
 
 ```
-gobboclippy-0.1.0-Linux/
+gobboclippy-0.2.0-Linux/
   licenses/
     README.txt                    what each file covers
     gobboclippy-MIT.txt
