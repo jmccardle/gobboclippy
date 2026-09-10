@@ -21,6 +21,28 @@
 #                                     libssl-3.dll, ...
 #   site/                             site/              <- sys.prefix; empty
 #                                                           until pip fills it
+#
+# macOS is the POSIX layout, moved wholesale into an .app bundle:
+#
+#   gobboclippy-<version>-macOS/          <- becomes the DMG's volume
+#     Applications -> /Applications       <- the drag target
+#     gobboclippy.app/Contents/
+#       Info.plist                        <- identity, and the microphone string
+#       MacOS/gobboclippy                 <- the binary, alone
+#       Resources/                        <- everything above, verbatim
+#         python3 -> ../MacOS/gobboclippy
+#
+# A bundle rather than a directory because macOS grants the microphone per
+# bundle: the prompt string comes from NSMicrophoneUsageDescription in the
+# Info.plist and the grant is recorded against CFBundleIdentifier. A bare
+# executable has neither, and inherits whatever launched it -- which works from
+# a terminal the user has already allowed, and cannot ask for itself in Finder.
+#
+# Resources/ rather than MacOS/ because SDL_GetBasePath answers with the
+# resource directory for a bundled app, and AppPaths.cpp resolves everything
+# this program opens from that one call. Nothing in the C++ changes; the
+# executable gains two rpath entries (CMakeLists.txt) so it can still find
+# libraries that are now a directory away.
 # ---------------------------------------------------------------------------
 
 if(WIN32)
@@ -31,7 +53,22 @@ else()
     set(GC_PLATFORM "Linux")
 endif()
 
-set(GC_STAGE "${CMAKE_BINARY_DIR}/stage/gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}")
+# The name of the thing a user ends up with: the directory inside the archive
+# everywhere else, the DMG's volume on macOS.
+set(GC_ARCHIVE_DIR "gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}")
+set(GC_VOLUME "${CMAKE_BINARY_DIR}/stage/${GC_ARCHIVE_DIR}")
+
+# GC_STAGE is the payload root -- the directory the running binary sees as its
+# base path, and the one every rule below stages into. GC_EXEDIR is where the
+# binary itself goes. They are the same directory everywhere except in an .app.
+if(APPLE)
+    set(GC_APP    "${GC_VOLUME}/gobboclippy.app")
+    set(GC_STAGE  "${GC_APP}/Contents/Resources")
+    set(GC_EXEDIR "${GC_APP}/Contents/MacOS")
+else()
+    set(GC_STAGE  "${GC_VOLUME}")
+    set(GC_EXEDIR "${GC_VOLUME}")
+endif()
 
 # CPython looks for "python<major><minor>.zip" on sys.path -- no dot. Naming it
 # anything else means the interpreter silently never finds its stdlib.
@@ -43,10 +80,10 @@ endif()
 
 add_custom_target(package-dir
     DEPENDS gobboclippy
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${GC_STAGE}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${GC_STAGE}/lib"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${GC_VOLUME}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${GC_STAGE}/lib" "${GC_EXEDIR}"
 
-    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:gobboclippy> "${GC_STAGE}/"
+    COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:gobboclippy> "${GC_EXEDIR}/"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_SOURCE_DIR}/assets"  "${GC_STAGE}/assets"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -55,6 +92,29 @@ add_custom_target(package-dir
     COMMENT "Staging ${GC_STAGE}"
     VERBATIM
 )
+
+# --- the bundle's own files ------------------------------------------------
+if(APPLE)
+    # Configured at configure time; the version and the identifier are the only
+    # substitutions, and both are known then.
+    set(GC_PLIST "${CMAKE_BINARY_DIR}/Info.plist")
+    configure_file("${CMAKE_SOURCE_DIR}/cmake/Info.plist.in" "${GC_PLIST}" @ONLY)
+
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${GC_PLIST}" "${GC_APP}/Contents/Info.plist"
+        COMMAND ${CMAKE_COMMAND}
+                -DPNG=${CMAKE_SOURCE_DIR}/assets/clippy.png
+                -DOUT=${GC_STAGE}/gobboclippy.icns
+                -DWORK=${CMAKE_BINARY_DIR}
+                -P "${CMAKE_SOURCE_DIR}/cmake/MacIcon.cmake"
+        # The drag target. A DMG whose window holds only an app is one the user
+        # is expected to run from the mounted image, and an app run from a
+        # read-only mount is an app whose site/ cannot be installed into.
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                /Applications "${GC_VOLUME}/Applications"
+        VERBATIM)
+endif()
 
 # --- the standard library --------------------------------------------------
 if(CMAKE_CROSSCOMPILING)
@@ -384,15 +444,11 @@ add_custom_command(TARGET package-dir POST_BUILD
 # staging tree, rather than asking the build machine to provide a small Python,
 # is what makes the two agree.
 if(APPLE)
-    # Relocate, strip and sign are one script on macOS because their order is
-    # forced: install_name_tool and strip each invalidate the signature, so
-    # signing has to come last and has to come after both.
-    add_custom_command(TARGET package-dir POST_BUILD
-        COMMAND ${CMAKE_COMMAND}
-                -DEXE=${GC_STAGE}/gobboclippy
-                -DSTAGE=${GC_STAGE}
-                -P "${CMAKE_SOURCE_DIR}/cmake/MacFinalize.cmake"
-        VERBATIM)
+    # Deliberately nothing here. Relocating, stripping and signing are one
+    # script on macOS because their order is forced -- install_name_tool and
+    # strip each invalidate a signature -- and the bundle's own signature seals
+    # every file in it, so it cannot be made until the last file is in place.
+    # That is after the interpreter alias below, not here.
 elseif(MSVC)
     # No strip step, and no strip tool either -- MSVC does not ship one because
     # it does not need one. Its symbols go to a .pdb rather than into the image,
@@ -442,6 +498,16 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy
                 "${GC_STAGE}/gobboclippy.exe" "${GC_STAGE}/python.exe"
         VERBATIM)
+elseif(APPLE)
+    # The alias stays in Resources, because sys.executable has to name a path
+    # under the same root as sys.base_prefix -- but the binary it names is a
+    # directory away now, so the link is relative to itself rather than a bare
+    # name. Archive formats and codesign both record a symlink by its target
+    # string, so this survives both.
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                ../MacOS/gobboclippy "${GC_STAGE}/python3"
+        VERBATIM)
 else()
     add_custom_command(TARGET package-dir POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E create_symlink
@@ -449,21 +515,70 @@ else()
         VERBATIM)
 endif()
 
+# --- finalise the bundle ---------------------------------------------------
+#
+# Genuinely last: relocate, strip, sign every Mach-O inside-out, then sign the
+# bundle itself. A bundle signature seals every file under Contents/, so it has
+# to be made after the icon, the plist, site/ and the alias are all in place.
+#
+# Staging one of them afterwards would ship a bundle whose seal does not match
+# its own contents, and that failure is quiet in the worst way: the kernel
+# checks the executable, not the seal, so it launches here and is refused on
+# the first machine that downloads it. `codesign --verify` is what notices, and
+# CI runs it. See "Repacking a release" in docs/macos.md, which is the same
+# hazard arriving from the other direction.
+if(APPLE)
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                -DEXE=${GC_EXEDIR}/gobboclippy
+                -DSTAGE=${GC_STAGE}
+                -DSCAN=${GC_APP}
+                -DBUNDLE=${GC_APP}
+                -P "${CMAKE_SOURCE_DIR}/cmake/MacFinalize.cmake"
+        VERBATIM)
+endif()
+
 # --- archive ---------------------------------------------------------------
-# zip for Windows (what people expect to double-click), tar.gz elsewhere.
-set(GC_ARCHIVE_DIR "gobboclippy-${PROJECT_VERSION}-${GC_PLATFORM}")
+# zip for Windows (what people expect to double-click), a disk image on macOS,
+# tar.gz elsewhere.
+#
+# The DMG is not decoration either. Archive Utility propagates the quarantine
+# attribute onto every file it extracts from a zip, which puts the app into App
+# Translocation -- it runs from a randomised read-only path, and every path this
+# program resolves is relative to where it thinks it is. Dragging out of a
+# mounted image is a move the system recognises, and the translocation does not
+# happen. See docs/macos.md.
 if(WIN32)
     set(GC_ARCHIVE "${CMAKE_BINARY_DIR}/${GC_ARCHIVE_DIR}.zip")
     set(GC_TAR_ARGS cf "${GC_ARCHIVE}" --format=zip)
+elseif(APPLE)
+    set(GC_ARCHIVE "${CMAKE_BINARY_DIR}/${GC_ARCHIVE_DIR}.dmg")
+    find_program(GC_HDIUTIL hdiutil REQUIRED)
 else()
     set(GC_ARCHIVE "${CMAKE_BINARY_DIR}/${GC_ARCHIVE_DIR}.tar.gz")
     set(GC_TAR_ARGS czf "${GC_ARCHIVE}")
 endif()
 
-add_custom_target(package
-    DEPENDS package-dir
-    COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}/stage"
-            ${CMAKE_COMMAND} -E tar ${GC_TAR_ARGS} "${GC_ARCHIVE_DIR}"
-    COMMENT "Writing ${GC_ARCHIVE}"
-    VERBATIM
-)
+if(APPLE)
+    # UDZO over HFS+: the compressed, read-only, universally-mountable form.
+    # -ov because hdiutil refuses to overwrite otherwise, and a stale image
+    # from the previous build is the worst possible thing to ship.
+    add_custom_target(package
+        DEPENDS package-dir
+        COMMAND ${GC_HDIUTIL} create
+                -volname "gobboclippy ${PROJECT_VERSION}"
+                -srcfolder "${GC_VOLUME}"
+                -fs HFS+ -format UDZO -ov
+                "${GC_ARCHIVE}"
+        COMMENT "Writing ${GC_ARCHIVE}"
+        VERBATIM
+    )
+else()
+    add_custom_target(package
+        DEPENDS package-dir
+        COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}/stage"
+                ${CMAKE_COMMAND} -E tar ${GC_TAR_ARGS} "${GC_ARCHIVE_DIR}"
+        COMMENT "Writing ${GC_ARCHIVE}"
+        VERBATIM
+    )
+endif()

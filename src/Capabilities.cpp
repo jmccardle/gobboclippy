@@ -91,7 +91,8 @@ std::string Capabilities::report() const
       << "  always on top : " << yn(always_on_top) << "\n"
       << "  transparent   : " << yn(transparent) << "\n"
       << "  skip taskbar  : " << yn(skip_taskbar) << "\n"
-      << "  tray icon     : " << yn(tray) << "\n";
+      << "  tray icon     : " << yn(tray) << "\n"
+      << "  microphone    : " << yn(microphone) << "\n";
 
     for (const auto& n : notes) {
         o << "  ! " << n << "\n";

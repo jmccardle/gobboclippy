@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The macOS package's identity. Configured from CMake; see cmake/Package.cmake.
+
+  This file is why the macOS package is a bundle at all. Three things here
+  cannot exist any other way:
+
+    CFBundleIdentifier            what TCC records a microphone grant against.
+    NSMicrophoneUsageDescription  the sentence the user reads in the prompt.
+                                  macOS refuses the microphone outright when
+                                  the key is missing: no prompt, no denial
+                                  dialog, the process is killed.
+    CFBundleExecutable            which file in Contents/MacOS is the program.
+
+  SDL_FILESYSTEM_BASE_DIR_TYPE is deliberately absent. SDL defaults it to
+  "resource", so SDL_GetBasePath (the single place this project resolves
+  runtime paths from) answers Contents/Resources/, which is where the whole
+  payload sits. Setting it to "bundle" or "parent" would move the payload
+  outside Contents/ and make this a malformed bundle.
+
+  LSUIElement is deliberately absent too, and that is a decision rather than an
+  omission: it would remove the Dock icon, which is right for a tray pet, but
+  SDL forces NSApplicationActivationPolicyRegular in Cocoa_RegisterApp() unless
+  SDL_HINT_MAC_BACKGROUND_APP is set before SDL_Init. The two have to land
+  together, and neither can be tested without Apple hardware. See docs/macos.md.
+
+  Note for editors: XML comments cannot contain a double hyphen, so the em
+  dashes used everywhere else in this project are absent from this block.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>gobboclippy</string>
+    <key>CFBundleIconFile</key>
+    <string>gobboclippy</string>
+    <key>CFBundleIdentifier</key>
+    <string>@GC_BUNDLE_ID@</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>gobboclippy</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>gobboclippy listens while you hold a conversation with it, and stops the moment you hide it.</string>
+</dict>
+</plist>

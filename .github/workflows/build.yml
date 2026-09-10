@@ -173,20 +173,64 @@ jobs:
           ./python.exe -c 'import sys; print(sys.executable, sys.prefix)'
           ./python.exe -m pip --version
 
+      # The bundle's identity, checked before anything is run. These three keys
+      # are the entire reason the macOS package is an .app: without them the
+      # microphone has no prompt to show and no grant to be recorded against,
+      # and the failure is silent -- the app simply records nothing.
+      - name: Bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          app=$(echo build/stage/gobboclippy-*-macOS/gobboclippy.app)
+          plutil -lint "$app/Contents/Info.plist"
+          plutil -extract CFBundleIdentifier           raw "$app/Contents/Info.plist"
+          plutil -extract CFBundleExecutable           raw "$app/Contents/Info.plist"
+          plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist"
+          test -f "$app/Contents/Resources/gobboclippy.icns"
+
+          # The seal, not just the executable's own signature. This is what a
+          # file edited after signing breaks, and it is how a repacked release
+          # is checked before it goes out.
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app"
+
       # Also proves relocatability the only way that means anything: from a
       # different directory, with the build tree's Python removed from the
       # environment. If an absolute install name survived, this is where it
       # shows up.
+      #
+      # Everything is run through the bundle's own layout -- the binary from
+      # Contents/MacOS, the payload from Contents/Resources -- because that is
+      # the only layout that ships. SDL_GetBasePath is what bridges the two,
+      # and it is not exercised by anything else.
       - name: Smoke test (macOS)
         if: runner.os == 'macOS'
         run: |
           mv build/stage/gobboclippy-*-macOS "$RUNNER_TEMP/relocated"
-          otool -L "$RUNNER_TEMP/relocated/gobboclippy"
-          cd "$RUNNER_TEMP/relocated"
-          env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --capabilities
-          env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --script scripts/smoke_test.py
+          app="$RUNNER_TEMP/relocated/gobboclippy.app"
+          otool -L "$app/Contents/MacOS/gobboclippy"
+          cd "$app/Contents/Resources"
+          env -u PYTHONHOME -u PYTHONPATH ../MacOS/gobboclippy --capabilities
+          env -u PYTHONHOME -u PYTHONPATH ../MacOS/gobboclippy --script scripts/smoke_test.py
           env -u PYTHONHOME -u PYTHONPATH ./python3 -c 'import sys; print(sys.executable, sys.prefix)'
           env -u PYTHONHOME -u PYTHONPATH ./python3 -m pip --version
+
+      # Mount what a user would actually download. A DMG that builds and does
+      # not mount, or mounts without the app, is a release nobody can open --
+      # and the staging tree above cannot tell us that.
+      #
+      # Not a substitute for the microphone test, which no runner can do: there
+      # is no audio input device and no one to answer a TCC prompt. What this
+      # proves is that the bundle survives the image round-trip with its seal
+      # intact, which is the part that has a way to go wrong quietly.
+      - name: Disk image (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          dmg=$(echo build/*.dmg)
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/mnt" "$dmg"
+          ls -l "$RUNNER_TEMP/mnt"
+          test -L "$RUNNER_TEMP/mnt/Applications"
+          codesign --verify --deep --strict "$RUNNER_TEMP/mnt/gobboclippy.app"
+          hdiutil detach "$RUNNER_TEMP/mnt"
 
       # Keyed on the package step, not on the job: a smoke-test failure still
       # fails the job, but the archive is kept so the failure can be taken
@@ -206,6 +250,7 @@ jobs:
           path: |
             build/*.tar.gz
             build/*.zip
+            build/*.dmg
           if-no-files-found: error
 
   release:
@@ -220,7 +265,7 @@ jobs:
 
       - name: Checksums
         run: |
-          find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) \
+          find dist -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.dmg' \) \
             -exec sha256sum {} + | sed 's|dist/[^/]*/||' > dist/SHA256SUMS
           cat dist/SHA256SUMS
 
@@ -231,6 +276,7 @@ jobs:
           files: |
             dist/**/*.tar.gz
             dist/**/*.zip
+            dist/**/*.dmg
             dist/SHA256SUMS
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}

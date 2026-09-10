@@ -11,6 +11,13 @@ endif()
 
 option(GC_STATIC_SDL "Link SDL3 statically into the executable" OFF)
 
+# The macOS bundle identifier. It is not decoration: macOS records the
+# microphone grant against it, so two forks that ship the same identifier share
+# one entry in the user's privacy settings and each one's rebuild disturbs the
+# other's grant. A fork changes this rather than patching cmake/Info.plist.in.
+set(GC_BUNDLE_ID "com.goblincorps.gobboclippy" CACHE STRING
+    "macOS bundle identifier (CFBundleIdentifier)")
+
 # ---------------------------------------------------------------------------
 # Dependencies
 #
@@ -104,6 +111,7 @@ add_executable(gobboclippy
     src/PyClippy.cpp
     src/Capabilities.cpp
     src/AppPaths.cpp
+    src/Mic.cpp
 
     # The drawing layer harvested from McRogueFace. Everything above this line
     # is host; everything below it is the sprite/text/animation subset, and
@@ -167,10 +175,18 @@ endif()
 # Resolve shared libraries relative to the executable, so the packaged
 # directory is relocatable. Without this the binary carries an absolute
 # RUNPATH into the build tree and only runs on the machine that built it.
+#
+# macOS carries two pairs because it has two layouts. In the build tree the
+# libraries sit beside the binary, as they do everywhere else. In the shipped
+# .app the binary is alone in Contents/MacOS and the entire payload -- SDL,
+# libpython, the stdlib, assets, scripts -- is in Contents/Resources, because
+# that is where SDL_GetBasePath answers for a bundled app and this project
+# resolves every runtime path from there. An rpath entry that names a directory
+# which does not exist is skipped, so both layouts carry both pairs harmlessly.
 if(APPLE)
     set_target_properties(gobboclippy PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE
-        INSTALL_RPATH "@loader_path;@loader_path/lib")
+        INSTALL_RPATH "@loader_path;@loader_path/lib;@executable_path/../Resources;@executable_path/../Resources/lib")
 elseif(UNIX)
     set_target_properties(gobboclippy PROPERTIES
         BUILD_WITH_INSTALL_RPATH TRUE

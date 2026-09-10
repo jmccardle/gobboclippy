@@ -24,11 +24,13 @@ struct Capabilities {
     bool transparent    = false;
     bool skip_taskbar   = false;
     bool tray           = false;
+    bool microphone     = false;
 
     // Human-readable degradations, e.g. why always_on_top is false.
     std::vector<std::string> notes;
 
-    // Fill in everything except `tray`, which Tray::create() sets.
+    // Fill in everything except `tray` and `microphone`, which the host sets
+    // once Tray::create() and Mic::devices() have answered.
     static Capabilities probe(SDL_Window* window, SDL_WindowFlags requested);
 
     std::string report() const;   // multi-line, for --capabilities and the log

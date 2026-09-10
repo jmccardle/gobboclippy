@@ -17,6 +17,7 @@
 #include "App.h"
 #include "AppPaths.h"
 #include "Drawable.h"
+#include "Mic.h"
 #include "PyClippy.h"
 
 namespace {
@@ -626,6 +627,20 @@ int main(int argc, char** argv)
     }
     app.window.caps_mutable().tray = true;
 
+    // --- microphone -------------------------------------------------------
+    // Asked once, reported, and never fatal: a machine with no audio runs the
+    // pet perfectly well, and only clippy.mic.start() has grounds to complain.
+    // Asking here rather than at the first start() is what lets --capabilities
+    // answer "is there a microphone" without opening one.
+    std::string mic_err;
+    const bool has_mic = !Mic::devices(mic_err).empty();
+    app.window.caps_mutable().microphone = has_mic;
+    if (!has_mic) {
+        app.window.caps_mutable().notes.push_back(
+            mic_err.empty() ? "No recording device; clippy.mic will refuse to start."
+                            : "Microphone unavailable: " + mic_err);
+    }
+
     if (opts.print_caps_only) {
         std::printf("%s", app.window.caps().report().c_str());
         app.tray.destroy();
@@ -664,6 +679,17 @@ int main(int argc, char** argv)
     // Animations are driven by measured elapsed time rather than by a frame
     // count, so a dropped frame shortens the next step instead of stretching
     // the animation. The first frame's dt is zero by construction.
+    //
+    // The loop runs without the GIL. Py_InitializeFromConfig leaves it held by
+    // this thread, and holding it here means a Python thread only ever gets
+    // scheduled during the frame hook -- which is most of a frame spent in
+    // SDL_Delay with every other thread stopped. A script that streams audio to
+    // a transcriber or waits on an agent needs threads that actually run, so the
+    // host gives the GIL up for the whole loop and takes it back only to enter
+    // Python. Every such entry point does that for itself: PyClippy's fire*
+    // helpers, and the animation completion callbacks in PyDraw.cpp.
+    PyThreadState* loop_gil = PyEval_SaveThread();
+
     Uint64 previous_ns = SDL_GetTicksNS();
 
     while (app.running) {
@@ -681,6 +707,18 @@ int main(int argc, char** argv)
                 // The stage's bounds are what alignment is measured against,
                 // so they follow the window rather than the request.
                 app.window.onResized();
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                // The window swallows clicks over its whole area, transparent
+                // corners included, so this is "the pet was clicked" and needs
+                // no hit test. SDL counts the clicks, which is why there is no
+                // double-click timer here.
+                PyClippy::fireClick("click", e.button.x, e.button.y,
+                                    e.button.button, e.button.clicks);
+                if (e.button.clicks == 2) {
+                    PyClippy::fireClick("double_click", e.button.x, e.button.y,
+                                        e.button.button, -1);
+                }
                 break;
             default:
                 break;
@@ -706,6 +744,12 @@ int main(int argc, char** argv)
 
     PyClippy::fire("quit");
 
+    // The device goes before the interpreter does: a script's audio thread is
+    // still alive here, and it reads through this stream.
+    Mic::stop();
+
+    PyEval_RestoreThread(loop_gil);
+
     // Drop every animation before the interpreter goes: a completion callback
     // holds a Python reference, and releasing one after Py_FinalizeEx is a
     // use-after-free.
@@ -713,6 +757,7 @@ int main(int argc, char** argv)
     Stage::instance().clear();
 
     Py_FinalizeEx();
+    Mic::quit();
     app.tray.destroy();
     app.window.destroy();
     SDL_Quit();

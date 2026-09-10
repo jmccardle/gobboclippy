@@ -7,9 +7,11 @@ you unzip and run.
 
 This is the *canonical base* — the platform, build and distribution layer —
 plus the sprite, animation and text subset harvested from
-[McRogueFace](https://github.com/jmccardle/McRogueFace) on top of it. Speech
-bubbles, input and a config window are deliberately still absent; see
-[docs/harvest.md](docs/harvest.md) for what was taken, what was cut, and why.
+[McRogueFace](https://github.com/jmccardle/McRogueFace) on top of it — plus a
+microphone, and a listening assistant built on subprocesses that speak JSON
+lines. Speech bubbles, per-drawable hit testing and a config window are
+deliberately still absent; see [docs/harvest.md](docs/harvest.md) for what was
+taken, what was cut, and why.
 
 ```
       ╭───────────────╮
@@ -19,7 +21,7 @@ bubbles, input and a config window are deliberately still absent; see
       ├───────────────┤
       │  drawing      │   Texture, Font, Sprite, Caption, Animation, Easing
       ├───────────────┤
-      │  C++ host     │   window flags, tray, event loop, paths
+      │  C++ host     │   window flags, tray, event loop, paths, microphone
       ├───────────────┤
       │  SDL3         │   one dependency, four platforms
       ╰───────────────╯
@@ -90,13 +92,14 @@ sudo apt install libgtk-3-0 libayatana-appindicator3-1
 
 ## Deliberately not implemented
 
-**Click-through, and input generally.** The window is a rectangle that swallows
-clicks over its whole area, transparent corners included. Shaped input regions
-(`wl_surface.set_input_region` and friends) are where the hover/drag/click
-state machine gets genuinely hard, and skipping them removes the worst
+**Click-through, and per-drawable hit testing.** The window is a rectangle that
+swallows clicks over its whole area, transparent corners included. Shaped input
+regions (`wl_surface.set_input_region` and friends) are where the hover/drag/
+click state machine gets genuinely hard, and skipping them removes the worst
 cross-platform cliff. Transparency makes it *look* like a paperclip; it is
-still a rectangle. McRogueFace's `click_at` / hover dispatch was cut along with
-it — drawables have no hit testing here.
+still a rectangle. So a click reaches the script as "the pet was clicked", with
+window coordinates — McRogueFace's `click_at` / hover dispatch is still cut, and
+drawables have no hit testing.
 
 **Speech bubbles.** A `Caption` on a transparent window sits on whatever the
 user's wallpaper happens to be, so there is no background colour to pick a
@@ -196,13 +199,61 @@ squashes and stretches, lifts its eyes and eyebrows, slides in, and cycles
 captions that fade. It exercises every piece described below, and it is meant
 to be replaced.
 
-`scripts/smoke_test.py` is the non-interactive check — 50 assertions over the
-host API and the drawing layer, including that a parent's scale does not move
-or resize its children:
+`scripts/smoke_test.py` is the non-interactive check — assertions over the host
+API and the drawing layer, including that a parent's scale does not move or
+resize its children, and that a hidden pet refuses to record:
 
 ```sh
 ./gobboclippy --script scripts/smoke_test.py     # non-zero on any failure
 ```
+
+### The assistant
+
+`scripts/assistant.py` is the one that listens. Double-click the pet to toggle
+the microphone; what it hears goes to a transcriber, committed utterances go to
+an agent, and the answer is drawn on the window.
+
+```sh
+./gobboclippy --script scripts/assistant.py
+```
+
+Both of those are **subprocesses speaking one line of JSON at a time**, because
+that is what they already are, and neither is imported:
+
+- the transcriber reads raw `s16le` 16 kHz mono on stdin and writes
+  `{"type": "ready"|"partial"|"final", ...}` on stdout. That is the contract of
+  [tectum](https://github.com/jmccardle/tectum)'s `streaming_stt_worker.py`
+  verbatim, so that worker runs here unchanged — and a different engine, local
+  or over the network, is a different program rather than a branch in
+  `scripts/gobbo/asr.py`.
+- the agent is `tau --mode rpc`, JSON-RPC 2.0 over stdio.
+
+Nothing heavy enters the pet's interpreter, and either end can be replaced by
+anything that speaks the same lines.
+
+Name the transcriber in `config.json` under `clippy.pref_path()`. There is no
+default for it: a guess that happened to be wrong would be a microphone that
+never answers rather than a sentence saying what to fix, so the first
+double-click prints the file to write and the JSON to put in it.
+
+```json
+{
+  "asr": {
+    "command": ["/path/to/asr-venv/bin/python",
+                "/path/to/tectum/tectum/audio/streaming_stt_worker.py"]
+  }
+}
+```
+
+`tau` does have a default — `sys.executable -m tau_coding_agent.cli --mode rpc`,
+which names no path outside the tree because the package ships its own
+interpreter and `pip` installs into that interpreter's `site/`. Override it,
+and the model, under a `"tau"` key.
+
+`scripts/gobbo/accumulate.py` is the seam between hearing and answering: the
+agent is fed committed utterances, not a raw transcript stream. It is thin
+today and exists for what goes there next — a wake word, a name resolver, an
+end-of-utterance projection.
 
 ### The interpreter
 
@@ -262,9 +313,29 @@ clippy.show()
 | `display_bounds()` | `(x, y, w, h)` work area of the display the pet is on |
 | `set_sprite(path)` | load one PNG, contained and centred; `OSError` if it cannot |
 | `capabilities()` | the dict behind `--capabilities` |
-| `on(event, fn)` | `show`, `hide`, `quit`, `frame` |
+| `on(event, fn)` | `show`, `hide`, `quit`, `frame`, `click`, `double_click`, `mic` |
+| `pref_path()` | per-user directory for this application's own files, created |
 | `quit()` | shut down |
 | `log(msg)` | write to the SDL log |
+
+| hook | arguments |
+|---|---|
+| `show` / `hide` / `quit` | none |
+| `frame` | seconds since the last frame |
+| `click` | `(x, y, button, clicks)` |
+| `double_click` | `(x, y, button)` |
+| `mic` | `True` when recording started, `False` when it stopped |
+
+The window swallows clicks over its whole area, transparent corners included,
+so a click event is "the pet was clicked" and needs no hit test. SDL counts the
+clicks, so there is no double-click timer here — but a double-click also fires
+`click` twice, with `clicks` 1 then 2, as every toolkit does it. Use one hook
+or the other.
+
+`pref_path()` is where a script keeps its own files: `~/.local/share/
+gobboclippy` on Linux, `%APPDATA%` on Windows, `~/Library/Application Support`
+on macOS. A script that needs a settings file asks for this rather than
+assembling a path out of `$HOME`, which is what keeps the tree forkable.
 
 Visibility changes route through one path (`App::setVisible`) whatever
 triggers them — tray, script, or window manager — so hooks fire on the
@@ -276,6 +347,50 @@ the same number the animations are ticked with, so script timing and animation
 timing cannot drift apart.
 
 `set_sprite()` is the one-image shortcut. Anything composed goes on the stage.
+
+### The microphone
+
+```python
+clippy.mic.spec()        # always (16000, 1, "s16le")
+clippy.mic.devices()     # [(id, name), ...]
+clippy.mic.start()       # or start(device_id)
+clippy.mic.read()        # bytes; b"" when nothing is waiting
+clippy.mic.queued()      # bytes waiting
+clippy.mic.active()
+clippy.mic.stop()
+```
+
+The host owns the device; the script owns where the audio goes. There is no
+new dependency behind this — SDL3 already does capture, resampling and
+buffering, so `src/Mic.cpp` is one `SDL_AudioStream` and a mutex.
+
+The format is fixed rather than negotiated. 16 kHz mono `s16le` is what every
+consumer downstream wants — it is the stdin contract of tectum's streaming
+worker verbatim, and what whisper, silero and the small edge models expect —
+and SDL resamples from whatever the hardware actually offers, so pinning it
+costs nothing and removes a negotiation from every caller.
+
+`read()` is safe from a thread, which is the point: the event loop gives up
+the GIL for the whole of each iteration and takes it back only to enter Python,
+so a script's audio thread actually runs instead of getting a sliver of each
+frame.
+
+**Recording only happens while the pet is visible.** Hiding the window closes
+the device, and `start()` while hidden raises. That rule is in the host rather
+than in the script because a user relies on it to know when the microphone is
+live, and a script is not the right place to keep a promise made to somebody
+else. Closing rather than pausing is deliberate too: a paused device keeps the
+operating system's own microphone-in-use indicator lit, and the whole point is
+that that indicator and the pet agree.
+
+`SDL_INIT_AUDIO` is not part of startup. A machine with no audio stack runs
+the pet perfectly well; `--capabilities` reports `microphone: no` with the
+reason, and only `start()` has grounds to complain.
+
+`devices()` is empty both when nothing is plugged in and when there is no audio
+stack at all, because to a caller asking what it can record from those are the
+same answer. The difference is in the `--capabilities` note, and in what
+`start()` raises.
 
 ### The stage
 
@@ -440,7 +555,8 @@ beside it and in the package's `licenses/`.
 | `src/Tray.*` | `SDL_Tray` menu: Show / Hide / Exit |
 | `src/Capabilities.*` | what the platform granted, and why not |
 | `src/AppPaths.*` | exe-relative path resolution |
-| `src/PyClippy.*` | the `clippy` extension module: host calls |
+| `src/Mic.*` | the recording device: one `SDL_AudioStream`, fixed at 16 kHz mono |
+| `src/PyClippy.*` | the `clippy` extension module: host calls and `clippy.mic` |
 | `src/Drawable.*` | transform, tree, alignment, the property system, `Stage` |
 | `src/Sprite.*` `src/Caption.*` | the two drawables |
 | `src/Texture.*` `src/Font.*` | PNG atlases (stb_image), glyph atlases (stb_truetype) |
@@ -448,10 +564,14 @@ beside it and in the package's `licenses/`.
 | `src/Effects.*` | the glow and aberration composites, and why they use no custom blend mode |
 | `tests/fx_pixels.cpp` | pixel-level check of those composites (`-DGC_BUILD_TESTS=ON`) |
 | `src/PyDraw.*` | Python types for all of the above — the only file here that includes `Python.h` |
+| `scripts/assistant.py` | the listening pet: mic, transcriber, agent, captions |
+| `scripts/gobbo/` | its parts — `config`, `asr`, `accumulate`, `tau`; stdlib only |
 | `cmake/Package.cmake` | the zip-and-ship staging tree |
 | `cmake/ZipStdlib.cmake` | stdlib zip construction |
 | `cmake/StripTree.cmake` | strip the staged binaries (Linux, Windows) |
-| `cmake/MacFinalize.cmake` | macOS: relocate, strip, sign — in that order |
+| `cmake/MacFinalize.cmake` | macOS: relocate, strip, sign, seal the bundle — in that order |
+| `cmake/Info.plist.in` | macOS: the bundle's identity, and the microphone prompt |
+| `cmake/MacIcon.cmake` | macOS: `assets/clippy.png` → `.icns` |
 
 ## Status
 
@@ -467,6 +587,24 @@ reads pixels back and asserts on them, and CI runs it twice, once on whatever
 renderer SDL picks and once with `SDL_RENDER_DRIVER=software`. The halo is only
 worth anything if it carries alpha, and that is a property of the blend modes
 used rather than of anything visible in a screenshot of an opaque window.
+
+**The microphone — working on Linux; unverified elsewhere.** Device enumeration,
+the fixed 16 kHz mono capture format, the hidden-pet refusal and the
+close-on-hide rule are all in the smoke test, and hold on a machine with no
+audio stack at all — which is every CI runner, so what CI proves is the
+refusals, not capture. The capture path itself is verified locally: SDL
+delivers the right byte count at the right rate, and `scripts/gobbo/asr.py`
+raises a `silent` event when an open device delivers nothing but zeroes, which
+is what a muted input looks like from in here and is otherwise
+indistinguishable from a transcriber that has stopped working.
+
+macOS needed packaging work before it could listen at all: it grants microphone
+access per *bundle*, through a TCC prompt driven by
+`NSMicrophoneUsageDescription` in an `Info.plist`, and a bare executable has
+nowhere to put that string. The macOS package is now a `.dmg` holding a signed
+`.app` — see `docs/macos.md`. CI checks the bundle is shaped to be able to ask;
+no runner has an input device or a person to answer, so the prompt itself is
+still unverified.
 
 **Windows — working.** Built natively by CI on a hosted Windows runner, where
 the packaged zip is extracted and runs the full smoke test — the drawing layer
@@ -484,9 +622,13 @@ identically. `docs/cross-compile.md` has the details, along with the C runtime
 rules that the mingw/MSVC split imposes on `src/main.cpp`.
 
 **macOS — working in CI, not buildable here.** Hosted arm64 runners build,
-relocate, sign and smoke-test the package; nothing about it can be reproduced
-on this machine, so every macOS change is verified only after it is pushed. See
-`docs/macos.md` for the routes and what they cost.
+relocate, sign and smoke-test the package, which is a `.dmg` containing an
+ad-hoc signed `.app`; CI mounts the image and re-verifies the bundle's seal on
+the other side. Nothing about it can be reproduced on this machine, so every
+macOS change is verified only after it is pushed, and nothing that needs a
+person in front of a screen is verified at all. See `docs/macos.md` for the
+routes, what signing at each level buys, and why a microphone makes the $99
+Developer ID a different question than Gatekeeper does.
 
 **Wayland — untested, and expected to be partly broken.** SDL's Wayland
 backend has no `SetWindowAlwaysOnTop` hook at all, and `SDL_SetWindowAlwaysOnTop`

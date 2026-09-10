@@ -2,7 +2,16 @@
 # each step invalidates the one before it.
 #
 # Run in script mode as a POST_BUILD step of package-dir:
-#   cmake -DEXE=... -DSTAGE=... -P MacFinalize.cmake
+#   cmake -DEXE=... -DSTAGE=... [-DSCAN=...] [-DBUNDLE=...] -P MacFinalize.cmake
+#
+#   EXE     the executable, signed last so its signature covers a settled tree.
+#   STAGE   the payload root: where lib/ is, and what the running binary sees
+#           as its base path.
+#   SCAN    the tree to hunt Mach-O files in. Defaults to STAGE; for a bundle
+#           it is the .app, because Contents/MacOS is not under Resources.
+#   BUNDLE  the .app to seal once every file inside it is final. Optional; the
+#           per-file signatures above are what the kernel insists on, the
+#           bundle signature is what carries the identity TCC records against.
 #
 # --- relocate ---------------------------------------------------------------
 #
@@ -35,6 +44,9 @@ if(NOT EXE OR NOT STAGE)
 endif()
 if(NOT EXISTS "${EXE}")
     message(FATAL_ERROR "MacFinalize.cmake: no such executable: ${EXE}")
+endif()
+if(NOT SCAN)
+    set(SCAN "${STAGE}")
 endif()
 
 set(LIBDIR "${STAGE}/lib")
@@ -121,11 +133,11 @@ endif()
 # invalid` at startup.
 execute_process(
     COMMAND sh -c
-            "find '${STAGE}' -type f -exec file --mime-type {} + | awk -F': ' '$2 ~ /mach-binary/ {print $1}'"
+            "find '${SCAN}' -type f -exec file --mime-type {} + | awk -F': ' '$2 ~ /mach-binary/ {print $1}'"
     OUTPUT_VARIABLE machos_raw
     RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
-    message(FATAL_ERROR "MacFinalize: could not enumerate Mach-O files in ${STAGE}")
+    message(FATAL_ERROR "MacFinalize: could not enumerate Mach-O files in ${SCAN}")
 endif()
 string(STRIP "${machos_raw}" machos_raw)
 string(REPLACE "\n" ";" machos "${machos_raw}")
@@ -182,3 +194,46 @@ endforeach()
 list(LENGTH machos n)
 math(EXPR saved_mb "(${before} - ${after}) / 1048576")
 message(STATUS "MacFinalize: stripped, signed and verified ${n} binaries, ${saved_mb} MB removed")
+
+# --- seal the bundle --------------------------------------------------------
+#
+# A bundle signature is a different thing from the signatures above, not a
+# repetition of them. Those are what stops the kernel killing an arm64 binary;
+# this one hashes every file under Contents/ into _CodeSignature/CodeResources
+# and binds the whole thing to CFBundleIdentifier -- which is the identity TCC
+# records a microphone grant against, and the identity Gatekeeper would check
+# if this were ever signed with something other than an ad-hoc identity.
+#
+# It has to come last, and it has to be redone by anything that later edits a
+# file inside the bundle. See "Repacking a release" in docs/macos.md.
+#
+# codesign reads the identifier from the Info.plist rather than being told it,
+# so there is one place it is written and no way for the two to disagree.
+if(BUNDLE)
+    if(NOT IS_DIRECTORY "${BUNDLE}")
+        message(FATAL_ERROR "MacFinalize: no such bundle: ${BUNDLE}")
+    endif()
+    if(NOT EXISTS "${BUNDLE}/Contents/Info.plist")
+        message(FATAL_ERROR
+            "MacFinalize: ${BUNDLE} has no Contents/Info.plist. codesign would "
+            "sign it as a directory of loose files, and the microphone prompt "
+            "this bundle exists for comes from that plist.")
+    endif()
+
+    execute_process(COMMAND "${CODESIGN}" --force --sign - "${BUNDLE}"
+                    RESULT_VARIABLE rc ERROR_VARIABLE err)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "codesign failed on ${BUNDLE}: ${err}")
+    endif()
+
+    # --strict, and --deep on top of it: the point of verifying here is to
+    # catch a resource that changed after it was sealed, and a shallow verify
+    # of the bundle would not look inside lib/ at all.
+    execute_process(COMMAND "${CODESIGN}" --verify --deep --strict "${BUNDLE}"
+                    RESULT_VARIABLE rc ERROR_VARIABLE err)
+    if(NOT rc EQUAL 0)
+        message(FATAL_ERROR "codesign --verify failed on ${BUNDLE}: ${err}")
+    endif()
+
+    message(STATUS "MacFinalize: sealed ${BUNDLE}")
+endif()

@@ -29,7 +29,7 @@ caps = clippy.capabilities()
 clippy.log(f"driver={caps['video_driver']} platform={caps['platform']}")
 
 for key in ("platform", "video_driver", "borderless", "always_on_top",
-            "transparent", "skip_taskbar", "tray", "notes"):
+            "transparent", "skip_taskbar", "tray", "microphone", "notes"):
     if key not in caps:
         FAILURES.append(f"capabilities() missing key {key!r}")
 
@@ -74,6 +74,63 @@ clippy.toggle()
 check("visible after toggle()", clippy.visible(), True)
 
 check("hook sequence", seen, ["show", "hide", "show"])
+
+# --- the microphone ---------------------------------------------------------
+# No CI runner has a recording device, so everything below either holds with no
+# hardware at all or is branched on what capabilities() reported. Real capture
+# is not covered here and cannot be: it needs a machine with a microphone and
+# something making a noise into it.
+
+check("spec is the fixed format", clippy.mic.spec(), (16000, 1, "s16le"))
+check("devices() returns a list", isinstance(clippy.mic.devices(), list), True)
+check("idle mic is not active", clippy.mic.active(), False)
+check("idle mic has nothing queued", clippy.mic.queued(), 0)
+check("idle mic reads empty", clippy.mic.read(), b"")
+
+# Stopping something that is not running changed nothing, so it is a no-op
+# rather than an error -- and it must not fire the hook.
+mic_seen = []
+clippy.on("mic", lambda active: mic_seen.append(active))
+clippy.mic.stop()
+check("stop() on an idle mic is silent", mic_seen, [])
+
+# The invariant, checked where it is cheapest to check: hidden means no
+# recording, whether or not this machine has a microphone at all.
+clippy.hide()
+try:
+    clippy.mic.start()
+except RuntimeError as exc:
+    clippy.log(f"PASS  mic.start() refuses while hidden ({str(exc)[:48]}...)")
+else:
+    FAILURES.append("mic.start() recorded with the window hidden")
+    clippy.mic.stop()
+
+clippy.show()
+
+if caps["microphone"]:
+    clippy.mic.start()
+    check("mic is active after start()", clippy.mic.active(), True)
+    check("start() fires the hook", mic_seen, [True])
+
+    try:
+        clippy.mic.start()
+    except RuntimeError:
+        clippy.log("PASS  a second start() is refused")
+    else:
+        FAILURES.append("mic.start() opened a second recording")
+
+    # Hiding must close the device without being asked, and say that it did.
+    clippy.hide()
+    check("hiding stops the recording", clippy.mic.active(), False)
+    check("hiding fires the hook", mic_seen, [True, False])
+    clippy.show()
+else:
+    try:
+        clippy.mic.start()
+    except RuntimeError as exc:
+        clippy.log(f"PASS  no device, so start() raises ({str(exc)[:48]}...)")
+    else:
+        FAILURES.append("mic.start() succeeded with no recording device")
 
 # --- geometry --------------------------------------------------------------
 w, h = clippy.size()
