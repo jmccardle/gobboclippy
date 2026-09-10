@@ -392,6 +392,13 @@ stack at all, because to a caller asking what it can record from those are the
 same answer. The difference is in the `--capabilities` note, and in what
 `start()` raises.
 
+The reverse does not hold, and it is worth saying plainly: `microphone: yes`
+means a device was *enumerated*, not that it can be opened. A headless Linux
+machine with ALSA installed advertises a `default` device with no sound card
+behind it. Finding out for certain would mean opening the device, which is the
+one thing this program must not do behind the user's back — so `start()` is
+where that answer arrives, and it arrives as SDL's own error text.
+
 ### The stage
 
 `clippy.stage` is a live list of top-level drawables. A drawable's `.children`

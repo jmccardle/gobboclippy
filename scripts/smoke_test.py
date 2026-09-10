@@ -77,9 +77,18 @@ check("hook sequence", seen, ["show", "hide", "show"])
 
 # --- the microphone ---------------------------------------------------------
 # No CI runner has a recording device, so everything below either holds with no
-# hardware at all or is branched on what capabilities() reported. Real capture
-# is not covered here and cannot be: it needs a machine with a microphone and
-# something making a noise into it.
+# hardware at all or is branched on whether this machine turned out to have one.
+# Real capture is not covered here and cannot be: it needs a machine with a
+# microphone and something making a noise into it.
+#
+# The branch is on whether start() worked, not on capabilities()["microphone"],
+# and the difference is the whole lesson of this section. That flag means "SDL
+# enumerates a recording device", which is all anything can know without opening
+# one -- and opening one to find out is exactly what this program must not do,
+# because it would light the operating system's microphone indicator behind the
+# user's back. On a headless Linux runner ALSA advertises a `default` device
+# with no sound card behind it, so the flag is true and the open fails. Both
+# facts are honest; treating the first as a promise about the second is not.
 
 check("spec is the fixed format", clippy.mic.spec(), (16000, 1, "s16le"))
 check("devices() returns a list", isinstance(clippy.mic.devices(), list), True)
@@ -107,8 +116,19 @@ else:
 
 clippy.show()
 
-if caps["microphone"]:
+# start() has exactly two permitted outcomes: it records, or it raises with
+# SDL's reason. There is no third, and in particular no quiet no-op.
+refusal = None
+try:
     clippy.mic.start()
+except RuntimeError as exc:
+    refusal = str(exc)
+
+# Whatever happened, an unenumerated device cannot have been opened.
+if not caps["microphone"]:
+    check("no enumerated device, so start() refused", refusal is not None, True)
+
+if refusal is None:
     check("mic is active after start()", clippy.mic.active(), True)
     check("start() fires the hook", mic_seen, [True])
 
@@ -125,12 +145,13 @@ if caps["microphone"]:
     check("hiding fires the hook", mic_seen, [True, False])
     clippy.show()
 else:
-    try:
-        clippy.mic.start()
-    except RuntimeError as exc:
-        clippy.log(f"PASS  no device, so start() raises ({str(exc)[:48]}...)")
-    else:
-        FAILURES.append("mic.start() succeeded with no recording device")
+    # The failure path is worth asserting on rather than merely tolerating: a
+    # start that could not open a device must leave nothing behind it, or the
+    # next start() and the indicator disagree about what is happening.
+    clippy.log(f"note: no usable recording device ({refusal[:60]})")
+    check("a refused start leaves the mic idle", clippy.mic.active(), False)
+    check("a refused start queued nothing", clippy.mic.queued(), 0)
+    check("a refused start fires no hook", mic_seen, [])
 
 # --- geometry --------------------------------------------------------------
 w, h = clippy.size()
