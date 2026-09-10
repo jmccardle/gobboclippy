@@ -4,6 +4,7 @@
 
 #include <sys/stat.h>
 
+#include <cctype>
 #include <cstring>
 
 namespace {
@@ -38,6 +39,20 @@ bool init(std::string& error_out)
 const std::string& base() { return g_base; }
 
 std::string asset(const std::string& name)  { return join(join(g_base, "assets"), name); }
+
+bool isAbsolute(const std::string& path)
+{
+    if (path.empty()) return false;
+    if (path[0] == '/' || path[0] == '\\') return true;          // /x, \\server\x
+    // A drive letter, so "C:/x" and "C:\x" but not "assets:odd".
+    return path.size() >= 3 && std::isalpha((unsigned char)path[0]) &&
+           path[1] == ':' && (path[2] == '/' || path[2] == '\\');
+}
+
+std::string resolveAsset(const std::string& name)
+{
+    return isAbsolute(name) ? name : asset(name);
+}
 std::string script(const std::string& name) { return join(join(g_base, "scripts"), name); }
 std::string scriptDir()                     { return join(g_base, "scripts"); }
 std::string libDir()                        { return join(g_base, "lib"); }

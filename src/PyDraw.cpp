@@ -65,16 +65,12 @@ void genericDealloc(PyObject* self)
 // Small conversions
 // ---------------------------------------------------------------------------
 
-// A bare filename means assets/; anything with a separator is taken as given.
-// Same rule as clippy.set_sprite(), so a script does not have to remember
-// which call resolves and which does not.
+// A relative name means assets/, subfolders included; an absolute path is
+// taken as given. Same rule as clippy.set_sprite(), so a script does not have
+// to remember which call resolves and which does not.
 std::string resolveAsset(const char* path)
 {
-    std::string p = path;
-    if (p.find('/') == std::string::npos && p.find('\\') == std::string::npos) {
-        return AppPaths::asset(p);
-    }
-    return p;
+    return AppPaths::resolveAsset(path);
 }
 
 bool asFloat(PyObject* o, float& out)

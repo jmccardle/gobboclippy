@@ -21,6 +21,20 @@ std::string script(const std::string& name);  // <base>/scripts/<name>
 std::string scriptDir();                      // <base>/scripts
 std::string libDir();                         // <base>/lib
 
+// What a script means when it names an asset. A relative path resolves under
+// assets/, subdirectories included, so a set of art can be foldered and still
+// be found wherever the tree is installed. An absolute path is taken as given,
+// which is how a script reaches art it ships alongside itself.
+//
+// Relative used to mean "relative to the working directory" as soon as the
+// path contained a separator, which made a foldered asset unreachable except
+// by a path that only worked when launched from one particular directory.
+std::string resolveAsset(const std::string& name);
+
+// Whether a path names a location on its own, without a working directory.
+// Covers the Windows forms as well: "C:\x", "C:/x" and "\\server\share".
+bool isAbsolute(const std::string& path);
+
 bool exists(const std::string& path);
 
 // Read a whole file into memory. Used for Python sources: handing CPython a

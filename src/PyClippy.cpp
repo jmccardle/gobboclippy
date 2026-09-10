@@ -68,13 +68,9 @@ PyObject* c_set_sprite(PyObject*, PyObject* args)
     const char* path = nullptr;
     if (!PyArg_ParseTuple(args, "s:set_sprite", &path)) return nullptr;
 
-    // A bare filename is resolved against assets/; anything with a separator
-    // is taken as given.
-    std::string resolved = path;
-    if (resolved.find('/') == std::string::npos &&
-        resolved.find('\\') == std::string::npos) {
-        resolved = AppPaths::asset(resolved);
-    }
+    // A relative name is resolved against assets/, subfolders included; an
+    // absolute path is taken as given.
+    const std::string resolved = AppPaths::resolveAsset(path);
 
     std::string err;
     if (!a->window.setSprite(resolved, err)) {
@@ -228,7 +224,7 @@ PyMethodDef kMethods[] = {
     {"toggle",       c_toggle,       METH_NOARGS,  "Toggle window visibility."},
     {"visible",      c_visible,      METH_NOARGS,  "True if the window is currently mapped."},
     {"quit",         c_quit,         METH_NOARGS,  "Shut the application down."},
-    {"set_sprite",   c_set_sprite,   METH_VARARGS, "set_sprite(path) -> load a PNG. Bare names resolve against assets/."},
+    {"set_sprite",   c_set_sprite,   METH_VARARGS, "set_sprite(path) -> load a PNG. Relative paths resolve under assets/."},
     {"position",     c_position,     METH_NOARGS,  "Window position as (x, y)."},
     {"set_position", c_set_position, METH_VARARGS, "set_position(x, y)"},
     {"size",         c_size,         METH_NOARGS,  "Window size as (w, h)."},
