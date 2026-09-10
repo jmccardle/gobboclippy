@@ -257,20 +257,122 @@ except OSError:
 else:
     FAILURES.append("Font() accepted a file that is not a font")
 
+# --- effects ----------------------------------------------------------------
+fx = clippy.Sprite(texture=strip, pos=(100.0, 100.0), origin=(24.0, 24.0))
+
+check("effects are off by default", (fx.glow, fx.aberration), (0.0, 0.0))
+
+fx.glow = 12.0
+fx.glow_color = (120, 200, 255)
+fx.glow_strength = 2.5
+fx.aberration = 4.0
+fx.aberration_angle = 30.0
+check("glow round-trips", fx.glow, 12.0)
+check("glow_color round-trips", fx.glow_color, (120, 200, 255, 255))
+check("glow_strength round-trips", fx.glow_strength, 2.5)
+
+fx.glow_hardness = 0.75
+check("glow_hardness round-trips", fx.glow_hardness, 0.75)
+# Hardness is a coverage curve, not a pass count -- out of range has no meaning.
+fx.glow_hardness = 4.0
+check("glow_hardness clamps to 1", fx.glow_hardness, 1.0)
+fx.glow_hardness = 0.0
+
+check("glow modes default off", (fx.glow_over, fx.glow_flat), (False, False))
+fx.glow_over = True
+fx.glow_flat = True
+check("glow_over round-trips", fx.glow_over, True)
+check("glow_flat round-trips", fx.glow_flat, True)
+fx.glow_over = False
+fx.glow_flat = False
+check("aberration round-trips", fx.aberration, 4.0)
+check("aberration_angle round-trips", fx.aberration_angle, 30.0)
+
+# A negative blur radius has no meaning, and letting one through would size a
+# render target from it.
+fx.glow = -5.0
+check("negative glow clamps to zero", fx.glow, 0.0)
+fx.glow = 12.0
+
+# Effects are ordinary properties, so the existing animation system drives them
+# with no special case -- that is the whole reason they live on Drawable.
+a = fx.animate("glow", 30.0, 0.5)
+check("glow is animatable", a.property, "glow")
+a.complete()
+check("glow animation lands", fx.glow, 30.0)
+fx.glow = 12.0
+
+ac = fx.animate("glow_color", (255, 0, 0, 255), 0.5)
+ac.complete()
+check("glow_color is animatable", fx.glow_color, (255, 0, 0, 255))
+fx.glow_color = (120, 200, 255)
+
+ah = fx.animate("glow_hardness", 1.0, 0.5)
+ah.complete()
+check("glow_hardness is animatable", fx.glow_hardness, 1.0)
+fx.glow_hardness = 0.0
+
+# The two modes are booleans, and there is no meaningful value halfway between
+# a halo above the character and below it. animate() has to say so rather than
+# interpolate one.
+for mode in ("glow_over", "glow_flat"):
+    try:
+        fx.animate(mode, 1.0, 0.5)
+    except ValueError:
+        clippy.log(f"PASS  animate() refuses the {mode} mode")
+    else:
+        FAILURES.append(f"animate() accepted {mode}, which is a mode not a value")
+
+# --- subtree bounds ---------------------------------------------------------
+# What the effect target is sized from. Getting this wrong clips the halo, so
+# it is checked as geometry rather than left to the eye.
+solo = clippy.Sprite(texture=strip, pos=(200.0, 200.0), origin=(0.0, 0.0))
+check("subtree bounds of a leaf is its own box", solo.subtree_bounds,
+      solo.global_bounds)
+
+kid = clippy.Sprite(texture=strip, pos=(100.0, 0.0), origin=(0.0, 0.0),
+                    parent=solo)
+sx, sy, sw, sh = solo.subtree_bounds
+check("subtree bounds reaches the child", round(sw), 148)   # 48 + 100
+check("subtree bounds keeps the near edge", round(sx), 200)
+
+# bounds() ignores rotation, which is right for alignment and wrong for an
+# effect target: a rotated child would be clipped out of it.
+kid.remove()
+solo.rotation = 45.0
+_, _, rw, rh = solo.subtree_bounds
+check("subtree bounds grows with rotation", rw > 48.0 and rh > 48.0, True)
+solo.rotation = 0.0
+check("subtree bounds returns when unrotated", round(solo.subtree_bounds[2]), 48)
+
 # --- teardown ---------------------------------------------------------------
 cap.remove()
 check("remove() takes it off the stage", cap in clippy.stage, False)
 clippy.stage.clear()
 check("clear() empties the stage", len(clippy.stage), 0)
 
-# --- result ----------------------------------------------------------------
-if FAILURES:
-    clippy.log(f"{len(FAILURES)} FAILURE(S)")
-    for f in FAILURES:
-        clippy.log(f"  {f}")
-    sys.stderr.write("\n".join(FAILURES) + "\n")
-    clippy.quit()
-    raise SystemExit(1)
 
-clippy.log("all checks passed")
-clippy.quit()
+def finish(drawable, prop, value):
+    """Report and exit, once the effects have actually been through the loop."""
+    if FAILURES:
+        clippy.log(f"{len(FAILURES)} FAILURE(S)")
+        for f in FAILURES:
+            clippy.log(f"  {f}")
+        sys.stderr.write("\n".join(FAILURES) + "\n")
+        clippy.quit()
+        raise SystemExit(1)
+
+    clippy.log("all checks passed")
+    clippy.quit()
+
+
+# Everything above this line runs before the main loop starts, so none of it has
+# drawn a pixel. The effects are a multi-pass composite through a render target,
+# and compiling proves nothing about that -- so hand control back to the loop
+# with an effected sprite on the stage and quit from an animation callback,
+# which puts real frames with a live glow and aberration through the real
+# render path. A composite that fails logs and draws nothing; a composite that
+# is merely ugly still passes, and is checked by eye.
+clippy.stage.append(fx)
+clippy.show()
+fx.animate("aberration", 6.0, 0.15, callback=finish)

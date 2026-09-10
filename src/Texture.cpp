@@ -69,7 +69,53 @@ std::shared_ptr<Texture> Texture::load(SDL_Renderer* renderer,
 
 Texture::~Texture()
 {
-    if (m_tex) SDL_DestroyTexture(m_tex);
+    if (m_tex)  SDL_DestroyTexture(m_tex);
+    if (m_flat) SDL_DestroyTexture(m_flat);
+}
+
+SDL_Texture* Texture::silhouette(SDL_Renderer* renderer)
+{
+    if (m_flat)        return m_flat;
+    if (m_flat_failed) return nullptr;
+
+    // Decoded again rather than kept from load(): every texture would otherwise
+    // carry a copy of its pixels for a pass most of them never take.
+    int w = 0, h = 0, channels = 0;
+    stbi_uc* pixels = stbi_load(m_source.c_str(), &w, &h, &channels, 4);
+    if (!pixels) {
+        m_flat_failed = true;
+        SDL_Log("texture '%s': cannot build the glow_flat silhouette: %s",
+                m_source.c_str(),
+                stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+        return nullptr;
+    }
+
+    // Keep the alpha, throw the colour away. RGBA32 is 0xAABBGGRR on a
+    // little-endian host, so this is the top byte masked back in.
+    Uint32* px = (Uint32*)pixels;
+    for (size_t i = 0, n = (size_t)w * h; i < n; ++i) {
+        px[i] = 0x00FFFFFFu | (px[i] & 0xFF000000u);
+    }
+
+    SDL_Surface* surface = SDL_CreateSurfaceFrom(
+        w, h, SDL_PIXELFORMAT_RGBA32, pixels, w * 4);
+    if (surface) {
+        m_flat = SDL_CreateTextureFromSurface(renderer, surface);
+        SDL_DestroySurface(surface);
+    }
+    stbi_image_free(pixels);
+
+    if (!m_flat) {
+        m_flat_failed = true;
+        SDL_Log("texture '%s': cannot upload the glow_flat silhouette: %s",
+                m_source.c_str(), SDL_GetError());
+        return nullptr;
+    }
+
+    SDL_SetTextureBlendMode(m_flat, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(m_flat, m_smooth ? SDL_SCALEMODE_LINEAR
+                                             : SDL_SCALEMODE_NEAREST);
+    return m_flat;
 }
 
 SDL_FRect Texture::frame(int index) const
@@ -92,8 +138,8 @@ SDL_FRect Texture::frame(int index) const
 void Texture::setSmooth(bool smooth)
 {
     m_smooth = smooth;
-    if (m_tex) {
-        SDL_SetTextureScaleMode(m_tex, smooth ? SDL_SCALEMODE_LINEAR
-                                              : SDL_SCALEMODE_NEAREST);
-    }
+    const SDL_ScaleMode mode = smooth ? SDL_SCALEMODE_LINEAR
+                                      : SDL_SCALEMODE_NEAREST;
+    if (m_tex)  SDL_SetTextureScaleMode(m_tex, mode);
+    if (m_flat) SDL_SetTextureScaleMode(m_flat, mode);
 }

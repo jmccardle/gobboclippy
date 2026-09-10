@@ -29,6 +29,22 @@ public:
 
     SDL_Texture* handle() const { return m_tex; }
 
+    // The same image with every RGB forced to white and the alpha untouched --
+    // what a flat halo has to blur, since the halo's colour is meant to come
+    // from glow_color rather than from the art.
+    //
+    // It cannot be made by tinting. SDL_SetTextureColorMod only multiplies, so
+    // it can take a colour down to black but never up to white; blurring the
+    // art with a white tint just blurs the art, which is a halo the colour of
+    // whatever it is surrounding. Hence a second upload.
+    //
+    // Built on first use and cached, because most textures never appear under
+    // glow_flat and the ones that do are usually one per character. Returns
+    // nullptr and logs if the source file has gone away since it was loaded --
+    // the flat pass then skips this sprite, so the halo is visibly missing a
+    // piece rather than quietly coming back the wrong colour.
+    SDL_Texture* silhouette(SDL_Renderer* renderer);
+
     int spriteWidth()  const { return m_sprite_w; }
     int spriteHeight() const { return m_sprite_h; }
     int sheetWidth()   const { return m_sheet_w; }
@@ -52,6 +68,8 @@ private:
     Texture() = default;
 
     SDL_Texture* m_tex      = nullptr;
+    SDL_Texture* m_flat     = nullptr;   // lazy; see silhouette()
+    bool         m_flat_failed = false;  // so a missing file logs once, not per frame
     std::string  m_source;
     int          m_sprite_w = 0, m_sprite_h = 0;
     int          m_sheet_w  = 0, m_sheet_h  = 0;

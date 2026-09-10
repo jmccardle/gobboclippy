@@ -134,6 +134,18 @@ As planned:
   which is much smaller without those.
 - **shaders** (`PyShader`, `PyUniformCollection`). A paperclip does not need
   GLSL ES 2.
+
+  Still true, and it survived contact with the obvious counter-example. The
+  colour-shift / chromatic-aberration / glowing-halo set that later landed as
+  `src/Effects.*` all sound like shader work and none of it is: colour shifting
+  was already `Sprite.color`, and the other two are multi-pass composites. SDL
+  3.4 does offer custom fragment shaders through `SDL_GPURenderState`, but it is
+  implemented in one backend (`src/render/gpu/`), so using it would mean pinning
+  the `gpu` renderer on all three platforms and shipping SPIR-V, DXIL and MSL —
+  against a transparent always-on-top window that is the least reproducible part
+  of this project. The things that would genuinely need a shader are real hue
+  rotation of arbitrary art, a true gaussian, per-pixel distortion,
+  outline-from-alpha and dissolve. None of those has been asked for yet.
 - **ImGui.** Already excluded from McRogueFace's own SDL2 builds.
 - **`Scene` / `PySceneObject`.** A desktop pet has one surface. `Stage` — a
   flat list of roots plus the window bounds that alignment is measured against

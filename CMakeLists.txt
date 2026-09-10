@@ -87,6 +87,7 @@ add_executable(gobboclippy
     # is host; everything below it is the sprite/text/animation subset, and
     # only PyDraw.cpp in it knows that Python exists.
     src/Easing.cpp
+    src/Effects.cpp
     src/Texture.cpp
     src/Font.cpp
     src/Drawable.cpp
@@ -178,6 +179,41 @@ if(NOT GC_STATIC_SDL)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${GC_SDL_DEV}" $<TARGET_FILE_DIR:gobboclippy>
         VERBATIM)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests
+#
+# scripts/smoke_test.py is the main suite and needs no build flag -- it runs
+# against the shipped binary. This is the one check that has to see pixels, so
+# it links the drawing layer directly and is opt-in rather than part of every
+# build. CI turns it on for the Linux job, which already has a video driver.
+# ---------------------------------------------------------------------------
+option(GC_BUILD_TESTS "Build the pixel-level effect tests" OFF)
+
+if(GC_BUILD_TESTS)
+    add_executable(fx_pixels
+        tests/fx_pixels.cpp
+        src/Drawable.cpp
+        src/Effects.cpp
+        src/Sprite.cpp
+        src/Texture.cpp
+    )
+    target_include_directories(fx_pixels PRIVATE src ${stb_SOURCE_DIR})
+    if(GC_STATIC_SDL)
+        target_link_libraries(fx_pixels PRIVATE SDL3::SDL3-static)
+    else()
+        target_link_libraries(fx_pixels PRIVATE SDL3::SDL3)
+    endif()
+    if(APPLE)
+        set_target_properties(fx_pixels PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path;@loader_path/lib")
+    elseif(UNIX)
+        set_target_properties(fx_pixels PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "$ORIGIN:$ORIGIN/lib")
+    endif()
 endif()
 
 include(cmake/Package.cmake)

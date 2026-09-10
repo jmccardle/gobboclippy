@@ -266,8 +266,8 @@ root fade the whole character.
 
 Every drawable carries `pos`, `x`, `y`, `origin`, `scale` (per-axis; negative
 mirrors), `rotation`, `opacity`, `visible`, `z_index`, `name`, `parent`,
-`children`, `bounds`, `global_bounds`, `align`, `margin`, and the methods
-`animate()`, `realign()`, `move()`, `remove()`.
+`children`, `bounds`, `global_bounds`, `subtree_bounds`, `align`, `margin`, and
+the methods `animate()`, `realign()`, `move()`, `remove()`.
 
 ```python
 d.animate(property, target, duration,
@@ -292,6 +292,72 @@ completion having changed nothing.
 measured against the parent's bounds, or the window's for a top-level drawable.
 It is applied when set and on `realign()`, not continuously: a caption whose
 text changed has to be realigned.
+
+### Effects
+
+| property | |
+|---|---|
+| `glow` | halo blur radius in px; `0` disables |
+| `glow_color` | halo colour; its **alpha** sets how opaque the halo is |
+| `glow_strength` | brightness; above 1 adds additive passes |
+| `glow_hardness` | `0` broad soft falloff … `1` near-solid outline |
+| `glow_over` | draw the halo above the subtree instead of below (mode) |
+| `glow_flat` | halo takes its colour from `glow_color` alone (mode) |
+| `aberration` | colour-channel separation in px; `0` disables |
+| `aberration_angle` | direction of that separation, in degrees |
+
+The quantities are ordinary animatable properties, so nothing about them is
+special-cased:
+
+```python
+body.glow = 18.0
+body.glow_color = (120, 190, 255)
+body.glow_flat = True
+body.glow_hardness = 0.45
+body.animate("glow_strength", 0.5, 3.1,
+             easing=clippy.Easing.PING_PONG_EASE_IN_OUT, delta=True, loop=True)
+```
+
+`glow_over` and `glow_flat` are **modes, not quantities** — there is no halfway
+point between a halo above the character and below it — so they are plain bools
+and `animate()` rejects them rather than interpolating something meaningless.
+
+**`glow_flat` is what makes `glow_color` mean what it says.** Without it the
+halo is a blurred copy of the art and `glow_color` only tints it, so a dark
+character glows dark and no amount of `glow_strength` changes the hue. With it,
+a white silhouette of the subtree is blurred instead — costing one extra walk of
+the subtree, which is why it is opt-in.
+
+**`glow_over` wants a low `glow_color` alpha.** Drawn above the character an
+opaque halo veils it; around 60–90 it reads as a bloom with the face still
+legible.
+
+**An effect applies to the whole subtree, not to the drawable alone.** Setting
+`glow` on the clip haloes the character's silhouette once, rather than putting
+three haloes around the clip, an eye and a brow; setting `aberration` on it
+makes the parts fringe *with* each other instead of against each other. A
+drawable with an effect renders its subtree into a private target and
+composites that.
+
+Two consequences worth knowing:
+
+- **A glow spills past the character and the window clips it.** Nothing resizes
+  the window to compensate — a pet that silently grew its own window would be
+  harder to reason about than one whose halo stops at the edge. `subtree_bounds`
+  is there to work out the headroom you need.
+- **`glow` is what the effect's render target is sized from**, so animating the
+  radius resizes that target while animating `glow_strength` or `glow_color`
+  does not. The target size is rounded to a multiple of 16 so a radius animation
+  is not a texture allocation per frame, but brightness is still the cheaper
+  knob for a loop.
+
+No shaders. Both effects are multi-pass composites built from the blend modes
+every SDL renderer implements, including the software one — see `src/Effects.h`
+for why that constraint was worth keeping, and `tests/fx_pixels.cpp` for what
+holds it in place. The blur downsamples by repeated halving rather than in one
+step: `SDL_SCALEMODE_LINEAR` reads four texels however far it is minifying and
+there are no mipmaps, so a single large reduction aliases instead of blurring,
+and the halo crawls when the character moves.
 
 ## Assets
 
@@ -331,6 +397,8 @@ beside it and in the package's `licenses/`.
 | `src/Sprite.*` `src/Caption.*` | the two drawables |
 | `src/Texture.*` `src/Font.*` | PNG atlases (stb_image), glyph atlases (stb_truetype) |
 | `src/Animation.*` `src/Easing.*` | the animation manager and 36 curves |
+| `src/Effects.*` | the glow and aberration composites, and why they use no custom blend mode |
+| `tests/fx_pixels.cpp` | pixel-level check of those composites (`-DGC_BUILD_TESTS=ON`) |
 | `src/PyDraw.*` | Python types for all of the above — the only file here that includes `Python.h` |
 | `cmake/Package.cmake` | the zip-and-ship staging tree |
 | `cmake/ZipStdlib.cmake` | stdlib zip construction |
@@ -345,6 +413,12 @@ extracted tarball with a scrubbed environment on the bundled interpreter. The
 drawing layer — composed sprites, frame-sequence blinking, per-axis squash and
 stretch, eased motion, parented eyes and eyebrows, alignment, and faded text in
 the shipped font — is verified on screen and by the smoke test.
+
+The effect compositor is verified further down than that: `tests/fx_pixels.cpp`
+reads pixels back and asserts on them, and CI runs it twice, once on whatever
+renderer SDL picks and once with `SDL_RENDER_DRIVER=software`. The halo is only
+worth anything if it carries alpha, and that is a property of the blend modes
+used rather than of anything visible in a screenshot of an opaque window.
 
 **Windows — working.** Built natively by CI on a hosted Windows runner, where
 the packaged zip is extracted and runs the full smoke test — the drawing layer

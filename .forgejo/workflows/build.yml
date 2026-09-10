@@ -34,7 +34,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGC_BUILD_TESTS=ON
           cmake --build build -j$(nproc)
 
       - name: Package
@@ -47,6 +47,15 @@ jobs:
           cd build/stage/gobboclippy-*-Linux
           xvfb-run -a ./gobboclippy --capabilities
           xvfb-run -a ./gobboclippy --script scripts/smoke_test.py
+
+      # Twice, on purpose: once on whatever SDL picks, once on the software
+      # renderer, which has no custom blend modes. The compositor is written to
+      # need none, and running it there is what keeps that true.
+      - name: Effect pixel test
+        run: |
+          cd build
+          xvfb-run -a ./fx_pixels
+          SDL_RENDER_DRIVER=software xvfb-run -a ./fx_pixels
 
       - uses: actions/upload-artifact@v3
         with:

@@ -68,8 +68,11 @@ jobs:
       # out to rsvg-convert, inkscape or ImageMagick, none of which is present
       # on all three runner images.
 
+      # GC_BUILD_TESTS is on for every platform so the pixel test is at least
+      # compiled everywhere; it is only run on Linux, where the build-tree
+      # layout is single-config and predictable.
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGC_BUILD_TESTS=ON
 
       - name: Build
         run: cmake --build build --config Release -j 4
@@ -87,6 +90,17 @@ jobs:
           cd build/stage/gobboclippy-*-Linux
           xvfb-run -a dbus-run-session -- ./gobboclippy --capabilities
           xvfb-run -a dbus-run-session -- ./gobboclippy --script scripts/smoke_test.py
+
+      # Twice, on purpose. The effect compositor avoids SDL_ComposeCustomBlendMode
+      # so that it works on the software renderer, which supports none -- and the
+      # only way that stays true is to actually run it there. The default run is
+      # whatever SDL picks (opengl under xvfb, via llvmpipe).
+      - name: Effect pixel test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd build
+          xvfb-run -a ./fx_pixels
+          SDL_RENDER_DRIVER=software xvfb-run -a ./fx_pixels
 
       - name: Smoke test (Windows)
         if: runner.os == 'Windows'

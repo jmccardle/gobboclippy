@@ -1,6 +1,7 @@
 #include "PetWindow.h"
 
 #include "Drawable.h"
+#include "Effects.h"
 
 bool PetWindow::create(int width, int height, std::string& error_out)
 {
@@ -42,6 +43,10 @@ void PetWindow::destroy()
     // has to be emptied before the renderer goes.
     Stage::instance().clear();
     Stage::instance().renderer = nullptr;
+
+    // Same reason as the stage: the effect compositor keeps a scratch target
+    // made on this renderer.
+    Effects::shutdown();
 
     m_sprite.reset();
     if (m_renderer) { SDL_DestroyRenderer(m_renderer); m_renderer = nullptr; }

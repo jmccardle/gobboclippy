@@ -21,8 +21,25 @@ SDL_FPoint Sprite::contentSize() const
 void Sprite::draw(SDL_Renderer* r, SDL_FPoint offset, float alpha)
 {
     if (!m_tex) return;
+
+    // The silhouette pass wants shape, not colour. Drawable::blit already
+    // forces the tint white for it, but a tint only multiplies -- the art's own
+    // RGB still comes through, so blurring that gives a halo the colour of the
+    // sprite instead of the colour of glow_color. A separate white-RGB copy of
+    // the texture is the only way to get a real silhouette without a shader.
+    //
+    // Captions need no equivalent: a glyph atlas is already white with the
+    // coverage in alpha, so the white tint is all it takes.
+    SDL_Texture* tex = m_tex->handle();
+    if (s_flat_pass) {
+        tex = m_tex->silhouette(r);
+        // No silhouette means no contribution. Drawing the art here instead
+        // would put the bug back -- quietly, and only on coloured art.
+        if (!tex) return;
+    }
+
     const SDL_FRect src = m_tex->frame(m_index);
-    blit(r, m_tex->handle(), &src, offset, alpha, color);
+    blit(r, tex, &src, offset, alpha, color);
 }
 
 bool Sprite::setProperty(const std::string& name, int value)

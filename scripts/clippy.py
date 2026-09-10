@@ -22,6 +22,11 @@ screen using every piece of that layer:
     opacity               captions fade in and out, and opacity multiplies down
                           the tree
     text                  a shipped TrueType face, rasterised at runtime
+    effects               a pulsing halo, and a chromatic-aberration kick on the
+                          boing -- both animated like any other property, and
+                          both applied to the whole character rather than to
+                          each part, so the face fringes with the clip instead
+                          of against it
 """
 
 import random
@@ -54,6 +59,16 @@ BROW_OFFSET = (-2.5, -29.0)
 
 EYE_CELL = 48        # assets/eyes.png is a 5-frame strip of 48x48 cells
 BLINK = [0, 1, 2, 3, 4, 4, 3, 2, 1, 0]
+
+# The halo spills this far past the character, and the window clips it -- the
+# renderer will not draw outside the window and nothing here resizes it to
+# compensate. So this has to stay under BODY_TOP_MARGIN (30) and under the
+# slack at the sides ((300 - 256) / 2 = 22), or the glow ends in a hard edge.
+GLOW_RADIUS = 18.0
+
+# Aberration is measured in pixels of channel separation. Past about 6 it stops
+# reading as a glitch and starts reading as three sprites.
+BOING_ABERRATION = 5.0
 
 INK = (40, 49, 61)
 PAPER = (238, 242, 248)
@@ -163,8 +178,40 @@ class Pet:
                           easing=clippy.Easing.PING_PONG_EASE_IN_OUT,
                           delta=True, loop=True)
 
+        self.start_glowing()
         self.schedule_blink()
         self.schedule_boing()
+
+    def start_glowing(self):
+        """A halo that breathes, on the character as a whole.
+
+        The effect is set on `body`, and body is the root of the tree, so the
+        clip, the eyes and the brows are composited together and haloed once --
+        one outline around the character rather than three around its parts.
+
+        Only `glow_strength` is looped, not `glow`. Both are animatable, but the
+        radius is what the effect's render target is sized from, so animating it
+        resizes that target; brightness costs nothing. The radius is set once
+        and left alone.
+
+        `glow_hardness` sits between the two extremes on purpose: at 0 the halo
+        is a broad soft cloud, at 1 a dense outline that hugs the wire. Just
+        under half keeps the paperclip's shape legible while still reading as
+        light rather than as a second sprite.
+        """
+        self.body.glow = GLOW_RADIUS
+        self.body.glow_color = (120, 190, 255)
+        # Without glow_flat the halo is a blurred copy of the art, so its colour
+        # is the paperclip's tinted blue rather than blue. The clip is pale
+        # enough that both read as a glow, but flat is what makes glow_color
+        # mean what it says -- and it is the difference between a halo and a
+        # smear on anything darker.
+        self.body.glow_flat = True
+        self.body.glow_hardness = 0.45
+        self.body.glow_strength = 0.55
+        self.body.animate("glow_strength", 0.5, 3.1,
+                          easing=clippy.Easing.PING_PONG_EASE_IN_OUT,
+                          delta=True, loop=True)
 
     def blink(self):
         for eye in self.eyes.values():
@@ -200,7 +247,20 @@ class Pet:
             brow.animate("rotation", -8.0 if brow.scale[0] > 0 else 8.0, 0.22,
                          easing=clippy.Easing.EASE_OUT_BACK)
 
+        # A colour-separation kick that decays over the bounce. Snapping out and
+        # easing back is what makes it read as an impact rather than a wobble --
+        # the same shape as the elastic scale it rides on.
+        self.body.animate("aberration", BOING_ABERRATION, 0.09,
+                          easing=clippy.Easing.EASE_OUT_QUAD,
+                          conflict_mode="replace")
+        after(0.12, self.settle_aberration)
+
         after(0.7, self.settle)
+
+    def settle_aberration(self):
+        self.body.animate("aberration", 0.0, 0.55,
+                          easing=clippy.Easing.EASE_OUT_QUAD,
+                          conflict_mode="replace")
 
     def settle(self):
         """Put the face back, then hand the clip's scale back to the breathing

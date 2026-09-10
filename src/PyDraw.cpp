@@ -630,6 +630,36 @@ PyObject* dr_get_bounds(PyObject* self, void* closure)
     return rectToPy(global ? d->globalBounds() : d->bounds());
 }
 
+// glow_over and glow_flat are modes, not quantities: there is no halfway point
+// between a halo above the character and below it, so they are plain bools and
+// deliberately not in hasProperty() -- animate() rejects them rather than
+// interpolating something meaningless.
+PyObject* dr_get_glow_mode(PyObject* self, void* closure)
+{
+    Drawable* d = drawableOf(self); if (!d) return nullptr;
+    const bool over = closure != nullptr;
+    return PyBool_FromLong((over ? d->glow_over : d->glow_flat) ? 1 : 0);
+}
+
+int dr_set_glow_mode(PyObject* self, PyObject* value, void* closure)
+{
+    Drawable* d = drawableOf(self); if (!d) return -1;
+    if (!value) { PyErr_SetString(PyExc_AttributeError, "cannot delete"); return -1; }
+    const int v = PyObject_IsTrue(value);
+    if (v < 0) return -1;
+    if (closure) d->glow_over = (v != 0);
+    else         d->glow_flat = (v != 0);
+    return 0;
+}
+
+// Exposed so a script can work out the window headroom a glow needs: the
+// effect spills `glow` pixels past this box, and the window clips it.
+PyObject* dr_get_subtree_bounds(PyObject* self, void*)
+{
+    Drawable* d = drawableOf(self); if (!d) return nullptr;
+    return rectToPy(d->subtreeGlobalBounds());
+}
+
 PyObject* dr_get_global_pos(PyObject* self, void*)
 {
     Drawable* d = drawableOf(self); if (!d) return nullptr;
@@ -704,7 +734,17 @@ PyGetSetDef drawable_getset[] = {
     {"margin",       dr_get_margin, dr_set_margin, "Alignment margin on all edges.", (void*)"margin"},
     {"horiz_margin", dr_get_margin, dr_set_margin, "Overrides margin horizontally (-1 to inherit).", (void*)"horiz_margin"},
     {"vert_margin",  dr_get_margin, dr_set_margin, "Overrides margin vertically (-1 to inherit).",   (void*)"vert_margin"},
+    {"glow",             dr_get_float, dr_set_float, "Halo blur radius in px; 0 disables. Applies to the whole subtree.", (void*)"glow"},
+    {"glow_color",       dr_get_color, dr_set_color, "Halo tint. Multiplies, like color; raise glow_strength to brighten.", (void*)"glow_color"},
+    {"glow_strength",    dr_get_float, dr_set_float, "Halo brightness; above 1 adds additive passes.", (void*)"glow_strength"},
+    {"glow_hardness",    dr_get_float, dr_set_float, "0 a broad soft halo, 1 a near-solid outline.", (void*)"glow_hardness"},
+    {"glow_over",        dr_get_glow_mode, dr_set_glow_mode, "Draw the halo above the subtree instead of below it.", (void*)1},
+    {"glow_flat",        dr_get_glow_mode, dr_set_glow_mode, "Halo takes its colour from glow_color alone, whatever the art is. Costs a second pass over the subtree.", nullptr},
+    {"aberration",       dr_get_float, dr_set_float, "Colour-channel separation in px; 0 disables.", (void*)"aberration"},
+    {"aberration_angle", dr_get_float, dr_set_float, "Direction of the channel separation, in degrees.", (void*)"aberration_angle"},
     {"bounds",       dr_get_bounds, nullptr, "(x, y, w, h) in the parent's space.", nullptr},
+    {"subtree_bounds", dr_get_subtree_bounds, nullptr,
+     "(x, y, w, h) covering this drawable and its descendants, in stage space.", nullptr},
     {"global_bounds", dr_get_bounds, nullptr, "(x, y, w, h) in stage space.", (void*)1},
     {"global_pos",   dr_get_global_pos, nullptr, "Pivot in stage space.", nullptr},
     {"parent",       dr_get_parent, dr_set_parent, "Owning drawable, or None.", nullptr},
