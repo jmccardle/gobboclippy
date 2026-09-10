@@ -260,6 +260,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only for the tag's own annotation, which is the release notes. Tags are
+      # signed objects rather than refs, so fetch-depth: 0 is what makes the
+      # message readable at all -- a shallow checkout gets the commit and not
+      # the tag object hanging off it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with: { path: dist }
 
@@ -269,8 +277,39 @@ jobs:
             -exec sha256sum {} + | sed 's|dist/[^/]*/||' > dist/SHA256SUMS
           cat dist/SHA256SUMS
 
+      # v0.1.0 and v0.2.0 both shipped with a one-line "Full Changelog" body
+      # and a hand-written tag annotation nobody could see: generate_release_notes
+      # supplies the body when none is given, so the annotation was written and
+      # then discarded. It is the release notes, so it becomes the body here.
+      #
+      # The subject line is dropped: GitHub already shows the tag name as the
+      # release title, and repeating it as the first line of the body reads as
+      # a duplicate.
+      #
+      # The tag object type is checked first, and that check is the whole point
+      # of this step being three lines instead of one. For a lightweight tag
+      # %(contents) does not come back empty -- it falls through to the tagged
+      # *commit's* message, which is plausible enough to publish and wrong.
+      # Refusing here costs a re-tag; not refusing ships a release whose notes
+      # are a commit message nobody wrote for an audience.
+      - name: Release notes from the tag annotation
+        run: |
+          if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
+            echo "::error::$GITHUB_REF_NAME is a lightweight tag; re-tag with -a"
+            exit 1
+          fi
+          git tag -l --format='%(contents)' "$GITHUB_REF_NAME" | tail -n +3 > NOTES.md
+          if [ ! -s NOTES.md ]; then
+            echo "::error::$GITHUB_REF_NAME is annotated with a subject and no body"
+            exit 1
+          fi
+          cat NOTES.md
+
       # Anything with a hyphen in the tag -- v0.0.3-draft, v1.0.0-rc1 -- is a
       # prerelease. GitHub will not mark it as one on its own.
+      #
+      # generate_release_notes stays on alongside body_path: the API appends the
+      # generated changelog to a body rather than replacing it.
       - uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -278,5 +317,6 @@ jobs:
             dist/**/*.zip
             dist/**/*.dmg
             dist/SHA256SUMS
+          body_path: NOTES.md
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
