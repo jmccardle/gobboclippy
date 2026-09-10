@@ -70,6 +70,28 @@ else()
     set(GC_PYTHON_TARGET Python3::Python)
     set(GC_PY_TAG_VALUE     "${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}")
     set(GC_PY_VERSION_VALUE "${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
+
+    # The pip wheel this interpreter would install into a venv, which is the
+    # one the package ships (see cmake/Package.cmake). ensurepip knows where
+    # it is on every layout: CPython's own keeps it in ensurepip/_bundled,
+    # Debian moves it to /usr/share/python-wheels and patches ensurepip to
+    # match. Asking ensurepip is the one query that answers for both.
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c
+"import ensurepip, os
+p = ensurepip._get_packages()['pip']
+print(p.wheel_path or os.path.join(os.path.dirname(ensurepip.__file__), '_bundled', p.wheel_name))"
+        OUTPUT_VARIABLE GC_PIP_WHEEL_PATH
+        ERROR_VARIABLE  GC_PIP_WHEEL_ERR
+        RESULT_VARIABLE GC_PIP_WHEEL_RC
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT GC_PIP_WHEEL_RC EQUAL 0 OR NOT EXISTS "${GC_PIP_WHEEL_PATH}")
+        message(FATAL_ERROR
+            "Could not find the pip wheel that ${Python3_EXECUTABLE} bundles "
+            "(asked ensurepip; got '${GC_PIP_WHEEL_PATH}' ${GC_PIP_WHEEL_ERR}). "
+            "The package ships pip so its interpreter mode can install "
+            "packages. On Debian this is the python3-pip-whl package.")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -106,10 +128,15 @@ else()
 endif()
 target_link_libraries(gobboclippy PRIVATE ${GC_PYTHON_TARGET})
 
+# The wheel's file name is a build-time fact the binary states rather than
+# globs for, in the same way it states the stdlib zip's name.
+get_filename_component(GC_PIP_WHEEL_NAME "${GC_PIP_WHEEL_PATH}" NAME)
+
 target_compile_definitions(gobboclippy PRIVATE
     GC_VERSION="${PROJECT_VERSION}"
     GC_PY_VERSION="${GC_PY_VERSION_VALUE}"
     GC_PY_TAG="${GC_PY_TAG_VALUE}"
+    GC_PIP_WHEEL="${GC_PIP_WHEEL_NAME}"
 )
 
 # On Windows, build as a GUI app so no console window appears alongside the pet.

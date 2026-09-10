@@ -114,6 +114,32 @@ jobs:
           env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
             xvfb-run -a dbus-run-session -- ./gobboclippy --script scripts/smoke_test.py
 
+      # The same binary as python. No display for any of this: an install
+      # runs on a machine with none, and the interpreter mode never touches
+      # SDL video.
+      #
+      # The install is real -- ffwf-tau-agent-core from PyPI, wheels only --
+      # because the interpreter mode exists to run exactly that, and a pip
+      # that starts is not a pip that can install into this layout. The last
+      # line closes the loop: what pip put in site/ is what the pet imports.
+      - name: Interpreter mode (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd "$RUNNER_TEMP/relocated"
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./gobboclippy --python -c 'import sys; print(sys.executable, sys.prefix)'
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./python3 -m pip --version
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./python3 -m pip install --only-binary=:all: --disable-pip-version-check \
+              ffwf-tau-agent-core
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./python3 -c 'import tau_agent_core, sys; assert "/site/" in tau_agent_core.__file__, tau_agent_core.__file__'
+          printf 'import clippy, tau_agent_core\nclippy.log("pet imported " + tau_agent_core.__file__)\nclippy.quit()\n' \
+            > "$RUNNER_TEMP/import_tau.py"
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            xvfb-run -a dbus-run-session -- ./gobboclippy --script "$RUNNER_TEMP/import_tau.py"
+
       # Twice, on purpose. The effect compositor avoids SDL_ComposeCustomBlendMode
       # so that it works on the software renderer, which supports none -- and the
       # only way that stays true is to actually run it there. The default run is
@@ -132,6 +158,8 @@ jobs:
           cd build/stage/gobboclippy-*-Windows
           ./gobboclippy.exe --capabilities
           ./gobboclippy.exe --script scripts/smoke_test.py
+          ./python.exe -c 'import sys; print(sys.executable, sys.prefix)'
+          ./python.exe -m pip --version
 
       # Also proves relocatability the only way that means anything: from a
       # different directory, with the build tree's Python removed from the
@@ -145,6 +173,8 @@ jobs:
           cd "$RUNNER_TEMP/relocated"
           env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --capabilities
           env -u PYTHONHOME -u PYTHONPATH ./gobboclippy --script scripts/smoke_test.py
+          env -u PYTHONHOME -u PYTHONPATH ./python3 -c 'import sys; print(sys.executable, sys.prefix)'
+          env -u PYTHONHOME -u PYTHONPATH ./python3 -m pip --version
 
       # Keyed on the package step, not on the job: a smoke-test failure still
       # fails the job, but the archive is kept so the failure can be taken

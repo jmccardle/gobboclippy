@@ -81,6 +81,18 @@ foreach(f "${GC_WINPY_DLL}" "${GC_WINPY_ZIP}" "${GC_WINPY_LICENSE}")
     endif()
 endforeach()
 
+# The pip wheel the package ships for its interpreter mode. python.org's
+# layout keeps it under Lib/ensurepip/_bundled, and the kit carries that
+# directory even though the loose Lib/ is otherwise not shipped.
+file(GLOB GC_PIP_WHEEL_PATH "${GC_WINPY_ROOT}/Lib/ensurepip/_bundled/pip-*.whl")
+list(LENGTH GC_PIP_WHEEL_PATH _n)
+if(NOT _n EQUAL 1)
+    message(FATAL_ERROR
+        "Expected exactly one pip-*.whl in ${GC_WINPY_ROOT}/Lib/ensurepip/_bundled, "
+        "found ${_n}. The package ships pip so its interpreter mode can "
+        "install packages.")
+endif()
+
 message(STATUS "Windows CPython kit: ${GC_WINPY_ROOT} (Python ${GC_PY_VERSION_X})")
 
 # Stand in for the Python3::Python target the native path provides, so

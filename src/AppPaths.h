@@ -12,7 +12,9 @@
 //
 namespace AppPaths {
 
-// Must be called once, after SDL_Init, before anything else here.
+// Must be called once before anything else here. SDL_Init is not required:
+// SDL_GetBasePath is a filesystem call, and the interpreter mode uses it
+// without ever bringing up video.
 bool init(std::string& error_out);
 
 const std::string& base();                    // directory containing the exe

@@ -7,9 +7,11 @@
 #include <io.h>
 #endif
 
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "Animation.h"
 #include "App.h"
@@ -71,8 +73,48 @@ void usage(const char* argv0)
         "  --script PATH     Python entry point (default scripts/clippy.py)\n"
         "  --capabilities    Print the platform capability report and exit\n"
         "  --version         Print version and exit\n"
-        "  --help            This message\n",
-        argv0);
+        "  --help            This message\n"
+        "\n"
+        "Usage: %s --python [python args...]\n"
+        "\n"
+        "  Run the bundled interpreter as if it were python: -c, -m, a script,\n"
+        "  or the REPL. Everything after --python is the interpreter's own\n"
+        "  command line. Packages ship python3 (python.exe on Windows) beside\n"
+        "  the binary, which is the same executable and behaves the same way.\n"
+        "\n"
+        "  %s --python -m pip install <package>\n",
+        argv0, argv0, argv0);
+}
+
+// Whether this process was asked to be Python rather than the pet, and where
+// Python's own arguments start if so. Zero means the pet.
+//
+// Two spellings, one behaviour:
+//   gobboclippy --python [args...]     the flag has to come first, because
+//                                      nothing after it is ours to parse
+//   python3 [args...]                  the packaged symlink (a copy of the exe
+//                                      on Windows), so that sys.executable is
+//                                      something a subprocess can actually run
+//                                      as python: pip's build isolation,
+//                                      multiprocessing, anything that spawns
+//                                      [sys.executable, "-c", ...]
+int pythonArgvStart(int argc, char** argv)
+{
+    if (argc >= 2 && !std::strcmp(argv[1], "--python")) return 2;
+
+    // Basename of argv[0], with a Windows suffix removed, starting with
+    // "python": python3, python3.11, python.exe.
+    std::string name = argc >= 1 && argv[0] ? argv[0] : "";
+    const size_t slash = name.find_last_of("/\\");
+    if (slash != std::string::npos) name.erase(0, slash + 1);
+    if (name.size() > 4) {
+        std::string tail = name.substr(name.size() - 4);
+        for (char& c : tail) c = (char)std::tolower((unsigned char)c);
+        if (tail == ".exe") name.erase(name.size() - 4);
+    }
+    if (name.compare(0, 6, "python") == 0) return 1;
+
+    return 0;
 }
 
 bool parseArgs(int argc, char** argv, Options& o)
@@ -117,6 +159,12 @@ bool parseArgs(int argc, char** argv, Options& o)
         } else if (!std::strcmp(a, "--script")) {
             const char* v = next("--script"); if (!v) return false;
             o.script = v;
+        } else if (!std::strcmp(a, "--python")) {
+            // Anywhere but first it is ambiguous: the options before it are
+            // the pet's, and the pet is not what runs.
+            std::fprintf(stderr, "--python must be the first argument; "
+                                 "everything after it belongs to Python\n");
+            return false;
         } else {
             std::fprintf(stderr, "Unknown option: %s\n", a);
             usage(argv[0]);
@@ -133,15 +181,10 @@ bool parseArgs(int argc, char** argv, Options& o)
 // because a wrong runtime surfaces much later as a confusing import error.
 struct Runtime {
     bool        bundled = false;
-    std::string home;
+    std::string root;                  // the package directory
     std::string stdlib_zip;
     std::string dynload;               // POSIX: lib/python3.X/lib-dynload
-
-    // Whether to let CPython derive sys.path from home, or to state it.
-    // Windows derivation works and is what McRogueFace relies on with this
-    // exact runtime; the POSIX derivation does not find a bundled tree, so
-    // there the paths are given explicitly.
-    bool        derive_paths = false;
+                                       // Windows: DLLs
 };
 
 Runtime findRuntime()
@@ -164,49 +207,204 @@ Runtime findRuntime()
 
     rt.bundled = true;
 
-#ifdef _WIN32
-    // The package root is the prefix, matching python.org's embeddable layout:
-    // python3XX.zip and python3XX.dll beside the exe, .pyd files in DLLs/.
-    // CPython derives sys.path from there itself, so leave it to do that.
-    //
-    // This used to point at <base>/lib/Python and ship a second, loose copy of
-    // the standard library, on the theory that Windows CPython could not start
-    // without one. It can; see docs/cross-compile.md.
-    rt.home         = AppPaths::base();
-    rt.derive_paths = true;
-#else
-    rt.home         = AppPaths::base();
-    rt.derive_paths = false;
+    // Without SDL_GetBasePath's trailing separator: this becomes sys.prefix's
+    // parent and sys.base_prefix, and those are compared as strings.
+    rt.root = AppPaths::base();
+    while (!rt.root.empty() && (rt.root.back() == '/' || rt.root.back() == '\\'))
+        rt.root.pop_back();
 
+    // Where the stdlib's compiled extension modules sit. The two layouts
+    // match what each platform's CPython would derive on its own: .pyd files
+    // in DLLs/ beside the exe, as in python.org's embeddable package, and
+    // lib-dynload under lib/python3.X on POSIX.
+#ifdef _WIN32
+    const std::string dynload = AppPaths::base() + "DLLs";
+#else
     const std::string dynload = AppPaths::libDir() + "/python" GC_PY_VERSION "/lib-dynload";
-    if (AppPaths::exists(dynload)) rt.dynload = dynload;
 #endif
+    if (AppPaths::exists(dynload)) rt.dynload = dynload;
 
     SDL_Log("python: bundled runtime " GC_PY_VERSION " (%s)", rt.stdlib_zip.c_str());
     return rt;
 }
 
-bool startPython(const Options& opts, std::string& error_out)
-{
-    (void)opts;
+// The name the package ships the interpreter alias under, beside the binary.
+// A symlink to gobboclippy on POSIX, a copy of it on Windows; either way the
+// same executable, dispatched on argv[0] by pythonArgvStart(). It is what
+// sys.executable names in a bundled runtime, because that has to be a path a
+// subprocess can run as python and the pet binary is not one.
+#ifdef _WIN32
+#define GC_PYTHON_ALIAS "python.exe"
+#else
+#define GC_PYTHON_ALIAS "python3"
+#endif
 
-    // Pre-initialise in UTF-8 mode, before Py_InitializeFromConfig.
-    //
-    // This fixes the encoding of paths and stdio rather than deriving it from
-    // the console code page or the locale, so a script behaves the same on a
-    // machine whose console is cp437 as on one set to UTF-8. It is hygiene,
-    // not a fix for anything: contrary to what this comment used to claim, it
-    // was never what stood between this build and a working interpreter.
+// Pre-initialise in UTF-8 mode, before Py_InitializeFromConfig.
+//
+// This fixes the encoding of paths and stdio rather than deriving it from
+// the console code page or the locale, so a script behaves the same on a
+// machine whose console is cp437 as on one set to UTF-8. It is hygiene,
+// not a fix for anything: contrary to what this comment used to claim, it
+// was never what stood between this build and a working interpreter.
+bool preInitialize(std::string& error_out)
+{
     PyPreConfig preconfig;
     PyPreConfig_InitIsolatedConfig(&preconfig);
     preconfig.utf8_mode = 1;
 
-    PyStatus status = Py_PreInitialize(&preconfig);
+    const PyStatus status = Py_PreInitialize(&preconfig);
     if (PyStatus_Exception(status)) {
         error_out = std::string("Py_PreInitialize: ") +
                     (status.err_msg ? status.err_msg : "unknown");
         return false;
     }
+    return true;
+}
+
+bool setWide(PyConfig& config, wchar_t** field, const std::string& value,
+             std::string& error_out)
+{
+    const PyStatus status = PyConfig_SetBytesString(&config, field, value.c_str());
+    if (PyStatus_Exception(status)) {
+        error_out = "could not set " + value + " in the interpreter config";
+        return false;
+    }
+    return true;
+}
+
+// The one description of where the runtime lives, shared by the pet and the
+// interpreter mode so the two cannot disagree about sys.path or sys.prefix.
+//
+// The caller has already chosen the config family: isolated for a bundled
+// runtime, the ordinary Python config for a development build that borrows
+// the system interpreter.
+bool configureRuntime(PyConfig& config, const Runtime& rt, std::string& error_out)
+{
+    config.configure_c_stdio = 1;
+    if (!setWide(config, &config.stdio_encoding, "utf-8",            error_out) ||
+        !setWide(config, &config.stdio_errors,   "surrogateescape",  error_out) ||
+        !setWide(config, &config.program_name,   "gobboclippy",      error_out))
+        return false;
+
+    if (!rt.bundled) return true;
+
+    // Everything below is stated, nothing derived. CPython's path logic
+    // (Modules/getpath.py) is built around a `home` it searches for landmarks
+    // and derives prefix and sys.path from; this runtime does not set one,
+    // because a home unconditionally overrides the prefix, and the prefix is
+    // the point.
+    //
+    // sys.prefix is site/, one level below the package root that holds the
+    // standard library, and sys.base_prefix is that root. That is CPython's
+    // own model of a virtual environment -- stdlib in one prefix, installed
+    // packages in another -- and it is used here for two reasons.
+    //
+    // The first is that it decides where pip installs. Debian's CPython
+    // carries a sysconfig patch that answers `local/lib/python3.X/dist-packages`
+    // whenever prefix and base_prefix agree, and `lib/python3.X/site-packages`
+    // when they differ; vanilla CPython answers the second in both cases. A
+    // package built on Debian and one built on a GitHub runner would otherwise
+    // install to different places, and only one of them would be on sys.path.
+    // Telling both builds they are a venv makes them agree.
+    //
+    // The second is that site.py then puts site/lib/python3.X/site-packages
+    // (site/Lib/site-packages on Windows) on sys.path itself, in both the pet
+    // and the interpreter mode: what `python3 -m pip install` puts there is
+    // what `--script` can import.
+    const std::string site = rt.root + "/site";
+    if (!setWide(config, &config.prefix,           site,    error_out) ||
+        !setWide(config, &config.exec_prefix,      site,    error_out) ||
+        !setWide(config, &config.base_prefix,      rt.root, error_out) ||
+        !setWide(config, &config.base_exec_prefix, rt.root, error_out))
+        return false;
+
+    // The alias, not this binary: see GC_PYTHON_ALIAS.
+    const std::string exe = rt.root + "/" GC_PYTHON_ALIAS;
+    if (!setWide(config, &config.executable,      exe, error_out) ||
+        !setWide(config, &config.base_executable, exe, error_out))
+        return false;
+
+    // sys.path, in the order CPython itself would produce: the zip, the
+    // extension modules, the root. site.py appends site-packages after these.
+    config.module_search_paths_set = 1;
+    const std::string paths[] = { rt.stdlib_zip, rt.dynload, rt.root };
+    for (const std::string& path : paths) {
+        if (path.empty()) continue;
+
+        // Py_DecodeLocale allocates, and returns NULL on a decoding error
+        // or out of memory. Appending NULL would be undefined, and the
+        // buffer is ours to release either way.
+        wchar_t* wide = Py_DecodeLocale(path.c_str(), nullptr);
+        if (!wide) {
+            error_out = "could not decode " + path + " for the module search path";
+            return false;
+        }
+
+        const PyStatus status = PyWideStringList_Append(&config.module_search_paths, wide);
+        PyMem_RawFree(wide);
+
+        if (PyStatus_Exception(status)) {
+            error_out = "could not add " + path + " to the module search path";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool initializeFromConfig(PyConfig& config, std::string& error_out)
+{
+    const PyStatus status = Py_InitializeFromConfig(&config);
+    PyConfig_Clear(&config);
+
+    // `python -h` and `python -V` are answered during initialisation, and
+    // come back as an exit request rather than a failure. This is the
+    // handler CPython documents for that case: it exits with the code.
+    if (PyStatus_IsExit(status)) Py_ExitStatusException(status);
+
+    if (PyStatus_Exception(status)) {
+        error_out = std::string("Py_InitializeFromConfig: ") +
+                    (status.err_msg ? status.err_msg : "unknown");
+        return false;
+    }
+    return true;
+}
+
+// Insert at the front (index 0) or append (index -1) to sys.path.
+bool addSysPath(const std::string& dir, int index, std::string& error_out)
+{
+    PyObject* sys_path = PySys_GetObject("path");     // borrowed
+    if (!sys_path) {
+        error_out = "sys.path unavailable";
+        return false;
+    }
+    PyObject* p = PyUnicode_FromString(dir.c_str());
+    const int rc = !p ? -1
+                 : index < 0 ? PyList_Append(sys_path, p)
+                 : PyList_Insert(sys_path, index, p);
+    Py_XDECREF(p);
+    if (rc < 0) {
+        error_out = "could not add " + dir + " to sys.path";
+        return false;
+    }
+    return true;
+}
+
+// pip ships as its own wheel, and a wheel is importable straight off sys.path
+// -- pip's own bootstrap documents running it that way. It goes last, behind
+// site-packages, so a pip installed there by `pip install --upgrade pip`
+// shadows the shipped one rather than the other way round.
+//
+// Only a bundled runtime does this. A development build borrows the system
+// interpreter and gets the system's pip with it.
+bool addShippedPip(const Runtime& rt, std::string& error_out)
+{
+    if (!rt.bundled) return true;
+    return addSysPath(AppPaths::libDir() + "/" GC_PIP_WHEEL, -1, error_out);
+}
+
+bool startPython(std::string& error_out)
+{
+    if (!preInitialize(error_out)) return false;
 
     const Runtime rt = findRuntime();
 
@@ -218,71 +416,101 @@ bool startPython(const Options& opts, std::string& error_out)
         PyConfig_InitPythonConfig(&config);
     }
 
-    config.configure_c_stdio = 1;
-    PyConfig_SetBytesString(&config, &config.stdio_encoding, "utf-8");
-    PyConfig_SetBytesString(&config, &config.stdio_errors,   "surrogateescape");
-    PyConfig_SetBytesString(&config, &config.program_name,   "gobboclippy");
-
-    if (rt.bundled) {
-        PyConfig_SetBytesString(&config, &config.home, rt.home.c_str());
-    }
-
-    if (rt.bundled && !rt.derive_paths) {
-
-        // State sys.path outright rather than letting CPython derive it from
-        // home. The derivation rules differ between Windows and POSIX, and
-        // when they get it wrong they do so silently -- the interpreter comes
-        // up with an empty path and every import fails.
-        config.module_search_paths_set = 1;
-        const std::string paths[] = { rt.stdlib_zip, rt.dynload, rt.home };
-        for (const std::string& path : paths) {
-            if (path.empty()) continue;
-
-            // Py_DecodeLocale allocates, and returns NULL on a decoding error
-            // or out of memory. Appending NULL would be undefined, and the
-            // buffer is ours to release either way.
-            wchar_t* wide = Py_DecodeLocale(path.c_str(), nullptr);
-            if (!wide) {
-                error_out = "could not decode " + path + " for the module search path";
-                PyConfig_Clear(&config);
-                return false;
-            }
-
-            status = PyWideStringList_Append(&config.module_search_paths, wide);
-            PyMem_RawFree(wide);
-
-            if (PyStatus_Exception(status)) {
-                error_out = "could not add " + path + " to the module search path";
-                PyConfig_Clear(&config);
-                return false;
-            }
-        }
-    }
-
-    status = Py_InitializeFromConfig(&config);
-    PyConfig_Clear(&config);
-
-    if (PyStatus_Exception(status)) {
-        error_out = std::string("Py_InitializeFromConfig: ") +
-                    (status.err_msg ? status.err_msg : "unknown");
+    if (!configureRuntime(config, rt, error_out)) {
+        PyConfig_Clear(&config);
         return false;
     }
+    if (!initializeFromConfig(config, error_out)) return false;
 
     // scripts/ on sys.path so the entry point can import siblings.
-    const std::string dir = AppPaths::scriptDir();
-    PyObject* sys_path = PySys_GetObject("path");     // borrowed
-    if (!sys_path) {
-        error_out = "sys.path unavailable";
-        return false;
+    return addSysPath(AppPaths::scriptDir(), 0, error_out) &&
+           addShippedPip(rt, error_out);
+}
+
+// Be python. argv[start..] is the interpreter's command line, parsed by
+// CPython itself: -c, -m, a script path, - for stdin, nothing for the REPL,
+// and every flag python accepts. Py_RunMain then owns the process until the
+// interpreter finalises, and its return value is the exit status.
+//
+// No SDL beyond SDL_GetBasePath, no window, no tray: a pip install runs on a
+// machine with no display, and the tray check is fatal by design.
+int runInterpreter(int argc, char** argv, int start)
+{
+    std::string err;
+    if (!AppPaths::init(err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
     }
-    PyObject* p = PyUnicode_FromString(dir.c_str());
-    if (!p || PyList_Insert(sys_path, 0, p) < 0) {
-        Py_XDECREF(p);
-        error_out = "could not add scripts/ to sys.path";
-        return false;
+
+    // The pet announces which runtime it found because a wrong one surfaces
+    // later as a confusing import error. An interpreter answers the same
+    // question through sys.prefix, and python does not narrate its startup.
+    SDL_SetLogPriorities(SDL_LOG_PRIORITY_WARN);
+
+    if (!preInitialize(err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
     }
-    Py_DECREF(p);
-    return true;
+
+    const Runtime rt = findRuntime();
+
+    PyConfig config;
+    if (rt.bundled) {
+        PyConfig_InitIsolatedConfig(&config);
+    } else {
+        PyConfig_InitPythonConfig(&config);
+    }
+
+    // Where the isolated config and "be python" disagree, python wins:
+    //   parse_argv     the command line is CPython's to interpret
+    //   isolated       off, because CPython reads it as -I, and -I forces
+    //                  safe_path: python puts the script's directory (or the
+    //                  cwd, for -m) first on sys.path, and -P is still there
+    //                  for anyone who wants that back
+    //   signals        Ctrl-C in the REPL is KeyboardInterrupt, not death
+    // What -I also implied is kept, and now said directly: no PYTHON*
+    // environment variables and no user site. This runtime is self-contained
+    // by construction, and importing the host's packages into it would be
+    // importing modules built for a different interpreter. sys.flags reports
+    // both, as python -E -s would.
+    config.parse_argv              = 1;
+    config.isolated                = 0;
+    config.use_environment         = 0;
+    config.user_site_directory     = 0;
+    config.safe_path               = 0;
+    config.install_signal_handlers = 1;
+
+    if (!configureRuntime(config, rt, err)) {
+        PyConfig_Clear(&config);
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+
+    // argv[0] stays: CPython treats it as the program and starts parsing at
+    // argv[1]. Everything the pet's own parser would have seen is gone.
+    std::vector<char*> py_argv;
+    py_argv.push_back(argv[0]);
+    for (int i = start; i < argc; ++i) py_argv.push_back(argv[i]);
+
+    PyStatus status = PyConfig_SetBytesArgv(&config, (Py_ssize_t)py_argv.size(), py_argv.data());
+    if (PyStatus_Exception(status)) {
+        PyConfig_Clear(&config);
+        std::fprintf(stderr, "could not hand argv to the interpreter\n");
+        return 1;
+    }
+
+    if (!initializeFromConfig(config, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+
+    if (!addShippedPip(rt, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        Py_FinalizeEx();
+        return 1;
+    }
+
+    return Py_RunMain();
 }
 
 // Run a script by compiling its source, never by handing CPython a FILE*.
@@ -339,6 +567,12 @@ bool runScript(const std::string& path, std::string& error_out)
 int main(int argc, char** argv)
 {
     ensureStdioStreams();
+
+    // Before anything else, because nothing else applies: no window, no
+    // tray, no options of ours.
+    if (const int start = pythonArgvStart(argc, argv)) {
+        return runInterpreter(argc, argv, start);
+    }
 
     Options opts;
     if (!parseArgs(argc, argv, opts)) return 2;
@@ -403,7 +637,7 @@ int main(int argc, char** argv)
     SDL_Log("%s", app.window.caps().report().c_str());
 
     // --- python -----------------------------------------------------------
-    if (!PyClippy::registerModule(err) || !startPython(opts, err)) {
+    if (!PyClippy::registerModule(err) || !startPython(err)) {
         std::fprintf(stderr, "%s\n", err.c_str());
         app.tray.destroy();
         app.window.destroy();

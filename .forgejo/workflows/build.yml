@@ -23,7 +23,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential cmake git ca-certificates pkg-config \
-            python3-dev python3 \
+            python3-dev python3 python3-pip-whl \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
             libxfixes-dev libxss-dev libxkbcommon-dev libwayland-dev \
             wayland-protocols libdecor-0-dev libgtk-3-dev \
@@ -70,6 +70,30 @@ jobs:
             xvfb-run -a ./gobboclippy --capabilities
           env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
             xvfb-run -a ./gobboclippy --script scripts/smoke_test.py
+
+      # The same binary as python, with no display. The install is real --
+      # ffwf-tau-agent-core from PyPI, wheels only -- because that is what the
+      # interpreter mode exists to run, and the last line proves the pet
+      # imports what pip put in site/. This is the Debian-built package, so it
+      # is also the one that checks the venv-style prefix does what it is
+      # there for: Debian's sysconfig would otherwise send pip to
+      # local/lib/python3.11/dist-packages, which nothing puts on sys.path.
+      - name: Interpreter mode
+        run: |
+          cd /tmp/relocated
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./gobboclippy --python -c 'import sys; print(sys.executable, sys.prefix)'
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./python3 -m pip --version
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./python3 -m pip install --only-binary=:all: --disable-pip-version-check \
+              ffwf-tau-agent-core
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            ./python3 -c 'import tau_agent_core, sys; assert "/site/" in tau_agent_core.__file__, tau_agent_core.__file__'
+          printf 'import clippy, tau_agent_core\nclippy.log("pet imported " + tau_agent_core.__file__)\nclippy.quit()\n' \
+            > /tmp/import_tau.py
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            xvfb-run -a ./gobboclippy --script /tmp/import_tau.py
 
       # Twice, on purpose: once on whatever SDL picks, once on the software
       # renderer, which has no custom blend modes. The compositor is written to
@@ -143,6 +167,8 @@ jobs:
           cd build-windows/stage/gobboclippy-*-Windows
           xvfb-run -a wine ./gobboclippy.exe --capabilities
           xvfb-run -a wine ./gobboclippy.exe --script scripts/smoke_test.py
+          wine ./python.exe -c 'import sys; print(sys.executable, sys.prefix)'
+          wine ./python.exe -m pip --version
 
       - uses: actions/upload-artifact@v3
         with:

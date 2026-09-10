@@ -140,7 +140,8 @@ Produces a relocatable directory and an archive:
 
 ```
 gobboclippy-0.1.0-Linux/
-  gobboclippy            374 KB
+  gobboclippy            395 KB
+  python3 -> gobboclippy          the same binary, dispatched on argv[0]
   libSDL3.so.0           3.6 MB
   assets/                SVG sources + rendered PNGs + JetBrains Mono
   scripts/               clippy.py
@@ -149,9 +150,11 @@ gobboclippy-0.1.0-Linux/
     libpython3.11.so.1.0 7.4 MB   the SONAME, not the linker name
     python311.zip        2.4 MB   stdlib, test suites excluded
     python3.11/lib-dynload/        stdlib C extensions
+    pip-23.0.1-py3-none-any.whl    pip, importable straight from the wheel
+  site/                            sys.prefix; pip installs under here
 ```
 
-**18 MB on disk, 7.7 MB compressed.** The binary's RUNPATH is
+**19 MB on disk, 9.3 MB compressed.** The binary's RUNPATH is
 `$ORIGIN:$ORIGIN/lib`, and every runtime path is resolved from
 `SDL_GetBasePath()`, so the directory can be moved anywhere. Verified by
 running it from a different filesystem with `env -i`.
@@ -200,6 +203,43 @@ or resize its children:
 ```sh
 ./gobboclippy --script scripts/smoke_test.py     # non-zero on any failure
 ```
+
+### The interpreter
+
+The same binary is also a Python interpreter, and the package ships it under
+the name one expects:
+
+```sh
+./python3 -m pip install ffwf-tau-agent-core    # into site/, no --target needed
+./python3 -c 'import tau_agent_core'            # the same runtime the pet uses
+./gobboclippy --python -m pip list              # identical; --python must come first
+./python3                                       # the REPL
+```
+
+`python3` is a symlink to `gobboclippy` (`python.exe` is a copy, on Windows).
+The dispatch is on `argv[0]`, so it is one code path with `--python`; the
+alias exists so that `sys.executable` names something a subprocess can run as
+python — pip's build isolation, `multiprocessing`, anything that spawns
+`[sys.executable, "-c", ...]`. Nothing in this mode touches SDL video: a pip
+install runs on a machine with no display.
+
+What `pip install` puts in `site/` is what `--script` can import. That works
+because `sys.prefix` is `site/` and `sys.base_prefix` is the package root —
+CPython's own model of a venv — and it is done that way for a reason beyond
+tidiness. Debian's CPython patches `sysconfig` to answer
+`local/lib/python3.11/dist-packages` whenever the two prefixes agree, and
+vanilla CPython answers `lib/python3.11/site-packages`; a package built on the
+Forgejo runner and one built on GitHub would otherwise install to different
+places, only one of them on `sys.path`. Both CI Linux jobs install Tau's core
+from PyPI for real and then import it from the pet, so the layout is checked
+on the build that would have got it wrong.
+
+The runtime ignores `PYTHONPATH`, `PYTHONHOME` and the user site, as
+`python -E -s` does. It is self-contained by construction, and the host's
+packages were built for a different interpreter. pip ships as its own wheel
+on `sys.path` — the same one the bundled interpreter would have put in a venv,
+resolved through `ensurepip` at configure time — so it is whatever pip that
+CPython release carries, not a pinned version of this project's.
 
 ### The host
 
@@ -395,7 +435,7 @@ beside it and in the package's `licenses/`.
 
 | path | |
 |---|---|
-| `src/main.cpp` | CLI, init order, event loop |
+| `src/main.cpp` | CLI, init order, event loop, and the interpreter mode |
 | `src/PetWindow.*` | SDL3 window flags, render, the one-image shortcut |
 | `src/Tray.*` | `SDL_Tray` menu: Show / Hide / Exit |
 | `src/Capabilities.*` | what the platform granted, and why not |

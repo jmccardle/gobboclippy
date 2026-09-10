@@ -11,12 +11,16 @@
 #   POSIX                             Windows
 #   ------------------------------    ------------------------------
 #   gobboclippy                       gobboclippy.exe
+#   python3 -> gobboclippy            python.exe         <- a copy of the exe
 #   libSDL3.so.0                      SDL3.dll
 #   assets/  scripts/                 assets/  scripts/
 #   lib/python3XX.zip                 python3XX.zip      <- prefix root
 #   lib/python3.XX/lib-dynload/       DLLs/*.pyd
 #   lib/libpython3.XX.so.1.0          python3XX.dll      <- beside the exe
+#   lib/pip-*.whl                     lib/pip-*.whl
 #                                     libssl-3.dll, ...
+#   site/                             site/              <- sys.prefix; empty
+#                                                           until pip fills it
 # ---------------------------------------------------------------------------
 
 if(WIN32)
@@ -239,9 +243,42 @@ elseif(Python3_LIBRARY_RELEASE)
     endif()
 endif()
 
+# --- pip -------------------------------------------------------------------
+#
+# The wheel goes on sys.path as-is; pip is importable from its own wheel, which
+# is how ensurepip bootstraps it. GC_PIP_WHEEL_PATH was resolved at configure
+# time from the interpreter being bundled (CMakeLists.txt) or from the Windows
+# kit (WindowsPython.cmake), so it is always the pip that interpreter would
+# have put in a venv. The binary knows the file name as GC_PIP_WHEEL.
+add_custom_command(TARGET package-dir POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${GC_PIP_WHEEL_PATH}" "${GC_STAGE}/lib/"
+    VERBATIM)
+
+# pip's own licence, for the notices directory below. Where it sits inside the
+# wheel moved between pip versions (dist-info/LICENSE.txt, then
+# dist-info/licenses/LICENSE.txt), so the dist-info is unpacked and searched
+# rather than a path assumed. The vendored libraries' notices are excluded
+# from the search: they stay inside the wheel, where pip keeps them.
+set(GC_PIP_DISTINFO_DIR "${CMAKE_BINARY_DIR}/pip-dist-info")
+file(REMOVE_RECURSE "${GC_PIP_DISTINFO_DIR}")
+file(ARCHIVE_EXTRACT INPUT "${GC_PIP_WHEEL_PATH}"
+     DESTINATION "${GC_PIP_DISTINFO_DIR}"
+     PATTERNS "pip-*.dist-info/*")
+file(GLOB_RECURSE GC_PIP_LICENSE_CANDIDATES "${GC_PIP_DISTINFO_DIR}/pip-*.dist-info/LICENSE.txt")
+list(FILTER GC_PIP_LICENSE_CANDIDATES EXCLUDE REGEX "_vendor")
+list(LENGTH GC_PIP_LICENSE_CANDIDATES _n)
+if(NOT _n EQUAL 1)
+    message(FATAL_ERROR
+        "Expected exactly one LICENSE.txt in the dist-info of ${GC_PIP_WHEEL_PATH}, "
+        "found ${_n}: ${GC_PIP_LICENSE_CANDIDATES}. The package redistributes "
+        "pip, so its notice has to ship with it.")
+endif()
+list(GET GC_PIP_LICENSE_CANDIDATES 0 GC_PIP_LICENSE)
+
 # --- third-party notices ---------------------------------------------------
 #
-# A packaged build redistributes SDL3, stb and CPython as binaries. All three
+# A packaged build redistributes SDL3, stb, CPython and pip. All of their
 # licences require their notice to travel with them, and CPython's Windows
 # build additionally carries Microsoft's terms for the runtime DLLs it links.
 #
@@ -271,6 +308,7 @@ set(GC_NOTICES
     "${SDL3_SOURCE_DIR}/LICENSE.txt" "SDL3-zlib.txt"
     "${stb_SOURCE_DIR}/LICENSE"      "stb-MIT-or-public-domain.txt"
     "${GC_PY_LICENSE}"               "CPython-PSF.txt"
+    "${GC_PIP_LICENSE}"              "pip-MIT.txt"
     "${CMAKE_SOURCE_DIR}/assets/JetBrainsMono-LICENSE.txt"
                                      "JetBrainsMono-Apache-2.0.txt"
 )
@@ -301,8 +339,8 @@ set(GC_LICENSE_INDEX "${CMAKE_BINARY_DIR}/licenses-README.txt")
 file(WRITE "${GC_LICENSE_INDEX}"
 "gobboclippy ${PROJECT_VERSION} -- ${GC_PLATFORM}
 
-This package is MIT licensed and redistributes four other works in binary
-form. Their notices are here in full.
+This package is MIT licensed and redistributes five other works. Their
+notices are here in full.
 
   gobboclippy-MIT.txt             gobboclippy itself. MIT.
   SDL3-zlib.txt                   SDL3, the window/tray/event layer. zlib.
@@ -313,6 +351,10 @@ form. Their notices are here in full.
                                   library, Python ${GC_PY_VERSION_VALUE}. PSF-2.0, plus the
                                   notices for the software CPython itself
                                   incorporates.
+  pip-MIT.txt                     pip, shipped unmodified as lib/${GC_PIP_WHEEL_NAME}
+                                  for the interpreter mode. MIT. The libraries
+                                  pip vendors carry their own notices inside
+                                  that wheel, under its dist-info.
   JetBrainsMono-Apache-2.0.txt    JetBrains Mono 1.0.3, the shipped typeface,
                                   at assets/JetBrainsMono.ttf. Apache-2.0.
 ")
@@ -370,6 +412,40 @@ else()
                 -DSTRIP=${CMAKE_STRIP}
                 -DPLATFORM=${GC_PLATFORM}
                 -P "${CMAKE_SOURCE_DIR}/cmake/StripTree.cmake"
+        VERBATIM)
+endif()
+
+# --- the interpreter alias -------------------------------------------------
+#
+# The same executable under the name python expects to be called by. main.cpp
+# dispatches on argv[0], so `python3 -m pip install x` and
+# `gobboclippy --python -m pip install x` are one code path; the alias exists
+# so that sys.executable names something a subprocess can run as python.
+#
+# A symlink where the archive format can carry one. Windows gets a copy, and
+# gets it here, after the strip step, so the copy is of the stripped binary.
+#
+# site/ is sys.prefix, and its site-packages is where pip installs. It ships
+# empty, so the layout is visible before anything is installed into it, and
+# so it is on sys.path from the first run: site.py only adds a site-packages
+# directory that exists.
+if(WIN32)
+    set(GC_SITE_PACKAGES "${GC_STAGE}/site/Lib/site-packages")
+else()
+    set(GC_SITE_PACKAGES "${GC_STAGE}/site/lib/python${GC_PY_VERSION_VALUE}/site-packages")
+endif()
+add_custom_command(TARGET package-dir POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${GC_SITE_PACKAGES}"
+    VERBATIM)
+if(WIN32)
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${GC_STAGE}/gobboclippy.exe" "${GC_STAGE}/python.exe"
+        VERBATIM)
+else()
+    add_custom_command(TARGET package-dir POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+                gobboclippy "${GC_STAGE}/python3"
         VERBATIM)
 endif()
 

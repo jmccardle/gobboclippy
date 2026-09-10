@@ -112,11 +112,15 @@ linked into a PE binary. So the runtime is supplied explicitly via
   LICENSE.txt       the embeddable package's own notice
   DLLs/*.pyd        stdlib C extensions (omit if built into the DLL)
   *.dll             their dependencies (libssl, libffi, sqlite3, vcruntime)
+  Lib/ensurepip/_bundled/pip-*.whl
+                    the pip wheel python.org bundles; the package ships it
+                    for its interpreter mode
 ```
 
-A loose `Lib/` is **not** needed; the zip is the whole standard library. An
-earlier version of this file said otherwise and the package shipped both,
-which doubled the archive to 29 MB. See "The wine 8.0 red herring" below.
+A loose `Lib/` is **not** needed beyond that one wheel; the zip is the whole
+standard library. An earlier version of this file said otherwise and the
+package shipped both, which doubled the archive to 29 MB. See "The wine 8.0
+red herring" below.
 
 `LICENSE.txt` **is** needed, and is checked for like any other piece. It is not
 merely the PSF licence — it carries the "Additional Conditions for this Windows
