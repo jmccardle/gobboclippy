@@ -96,11 +96,23 @@ jobs:
         run: |
           mv build/stage/gobboclippy-*-Linux "$RUNNER_TEMP/relocated"
           cd "$RUNNER_TEMP/relocated"
-          ldd ./gobboclippy
+
+          # ldd under the same stripped environment as the runs below, not the
+          # step's ambient one. The executable carries DT_RUNPATH, and glibc
+          # searches LD_LIBRARY_PATH *before* DT_RUNPATH -- so with
+          # setup-python's lib directory still on it, a correctly bundled
+          # libpython resolves to the host's copy anyway and this check fails
+          # on a package that has nothing wrong with it.
+          #
+          # Nothing is lost by stripping it: a libpython that genuinely is not
+          # in the package then falls through to ld.so.cache or comes back
+          # "not found", and neither of those is under $PWD either.
+          ldd="env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH ldd"
+          $ldd ./gobboclippy
 
           # Every library we ship has to resolve inside the package. Anything
           # that escapes to the host is a library we are not actually bundling.
-          escaped=$(ldd ./gobboclippy \
+          escaped=$($ldd ./gobboclippy \
                     | grep -E 'libpython|libSDL3' \
                     | grep -v "$PWD" || true)
           if [ -n "$escaped" ]; then
@@ -181,8 +193,14 @@ jobs:
       # apart instead of guessed at. If packaging itself never ran there is
       # nothing to upload, and if-no-files-found stays fatal for the case that
       # matters -- a package target that produced nothing.
+      #
+      # always() is load-bearing, not decoration. A step condition that names
+      # no status function gets an implicit success(), so the plain
+      # steps.package check was still skipped the moment a smoke test failed --
+      # which is the only time this upload is worth anything, and is why the
+      # first two Linux failures left no artifact to take apart.
       - uses: actions/upload-artifact@v4
-        if: steps.package.outcome == 'success'
+        if: always() && steps.package.outcome == 'success'
         with:
           name: gobboclippy-${{ matrix.name }}
           path: |
