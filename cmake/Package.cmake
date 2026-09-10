@@ -15,7 +15,7 @@
 #   assets/  scripts/                 assets/  scripts/
 #   lib/python3XX.zip                 python3XX.zip      <- prefix root
 #   lib/python3.XX/lib-dynload/       DLLs/*.pyd
-#   lib/libpython3.XX.so              python3XX.dll      <- beside the exe
+#   lib/libpython3.XX.so.1.0          python3XX.dll      <- beside the exe
 #                                     libssl-3.dll, ...
 # ---------------------------------------------------------------------------
 
@@ -174,10 +174,69 @@ elseif(APPLE)
     # match -- and that has to happen after everything else is staged. See the
     # finalisation step at the bottom of this file.
 elseif(Python3_LIBRARY_RELEASE)
-    add_custom_command(TARGET package-dir POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${Python3_LIBRARY_RELEASE}" "${GC_STAGE}/lib/"
-        VERBATIM)
+    # Ship libpython under its SONAME, for the same reason SDL is shipped under
+    # its own a few lines up: the SONAME is the name the loader searches for.
+    #
+    # Python3_LIBRARY_RELEASE is the *linker* name -- libpython3.11.so, the
+    # symlink the -dev package installs -- and `cmake -E copy` dereferences it,
+    # so staging it directly wrote lib/libpython3.11.so while the executable's
+    # DT_NEEDED said libpython3.11.so.1.0. Nothing in $ORIGIN/lib matched that,
+    # the loader fell through to the default search path, and the package ran
+    # against the host's interpreter: fine on any machine with python3.11
+    # installed, and unable to start on exactly the machines a bundled runtime
+    # exists for. It was 7.7 MB of file that nothing ever opened.
+    #
+    # INSTSONAME is the interpreter's own record of the name it was built with,
+    # so it cannot disagree with what the linker wrote into our executable.
+    # Read from the interpreter rather than from the file, because objdump is
+    # not guaranteed to be present and this is not a fact worth deriving twice.
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -c
+                "import sysconfig as s; print(s.get_config_var('Py_ENABLE_SHARED') or 0); print(s.get_config_var('INSTSONAME') or '')"
+        OUTPUT_VARIABLE  GC_PY_SONAME_QUERY
+        ERROR_VARIABLE   GC_PY_SONAME_ERR
+        RESULT_VARIABLE  GC_PY_SONAME_RC
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+    if(NOT GC_PY_SONAME_RC EQUAL 0)
+        message(FATAL_ERROR
+            "Could not ask ${Python3_EXECUTABLE} for its INSTSONAME: "
+            "${GC_PY_SONAME_ERR}")
+    endif()
+
+    string(REPLACE "\n" ";" GC_PY_SONAME_QUERY "${GC_PY_SONAME_QUERY}")
+    list(GET GC_PY_SONAME_QUERY 0 GC_PY_SHARED)
+    list(GET GC_PY_SONAME_QUERY 1 GC_PY_INSTSONAME)
+    string(STRIP "${GC_PY_SHARED}"     GC_PY_SHARED)
+    string(STRIP "${GC_PY_INSTSONAME}" GC_PY_INSTSONAME)
+
+    if(NOT GC_PY_SHARED OR GC_PY_SHARED STREQUAL "0")
+        # A statically linked libpython is a legitimate build: the interpreter
+        # is inside our executable and there is nothing to ship beside it. Said
+        # out loud, because the alternative reading of an empty lib/ is that
+        # this step broke.
+        message(STATUS
+            "python: statically linked (Py_ENABLE_SHARED=0); no libpython to stage")
+    else()
+        # The SONAME file is a sibling of the linker name by construction, so
+        # take the directory from what CMake resolved and the name from the
+        # interpreter. Nothing here guesses at a library directory.
+        get_filename_component(GC_PY_LIBDIR "${Python3_LIBRARY_RELEASE}" DIRECTORY)
+        set(GC_PY_SONAME_FILE "${GC_PY_LIBDIR}/${GC_PY_INSTSONAME}")
+
+        if(NOT EXISTS "${GC_PY_SONAME_FILE}")
+            message(FATAL_ERROR
+                "No ${GC_PY_INSTSONAME} beside ${Python3_LIBRARY_RELEASE}. That "
+                "is the name this build's executable asks the loader for, so "
+                "the package would silently run against the host's libpython "
+                "instead of the one it ships.")
+        endif()
+
+        add_custom_command(TARGET package-dir POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${GC_PY_SONAME_FILE}" "${GC_STAGE}/lib/${GC_PY_INSTSONAME}"
+            VERBATIM)
+    endif()
 endif()
 
 # --- third-party notices ---------------------------------------------------

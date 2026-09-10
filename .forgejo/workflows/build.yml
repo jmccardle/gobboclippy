@@ -41,12 +41,35 @@ jobs:
         run: cmake --build build --target package
 
       # Runs the packaged tree, not the build tree, so this also proves the
-      # archive is relocatable and uses its own bundled interpreter.
+      # archive is relocatable.
+      #
+      # That it uses its own bundled interpreter is a separate claim, and one
+      # running it here cannot make: this container installs python3-dev, so
+      # the host's libpython sits in the loader's default search path and a
+      # package that bundles nothing runs just as well. It is what hid
+      # lib/libpython3.11.so being staged under the linker name instead of the
+      # SONAME. Only the ldd check below can tell the two apart.
       - name: Smoke test
         run: |
-          cd build/stage/gobboclippy-*-Linux
-          xvfb-run -a ./gobboclippy --capabilities
-          xvfb-run -a ./gobboclippy --script scripts/smoke_test.py
+          mv build/stage/gobboclippy-*-Linux /tmp/relocated
+          cd /tmp/relocated
+          ldd ./gobboclippy
+
+          # Every library we ship has to resolve inside the package. Anything
+          # that escapes to the host is a library we are not actually bundling.
+          escaped=$(ldd ./gobboclippy \
+                    | grep -E 'libpython|libSDL3' \
+                    | grep -v "$PWD" || true)
+          if [ -n "$escaped" ]; then
+            echo "bundled libraries resolved outside the package:"
+            echo "$escaped"
+            exit 1
+          fi
+
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            xvfb-run -a ./gobboclippy --capabilities
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            xvfb-run -a ./gobboclippy --script scripts/smoke_test.py
 
       # Twice, on purpose: once on whatever SDL picks, once on the software
       # renderer, which has no custom blend modes. The compositor is written to

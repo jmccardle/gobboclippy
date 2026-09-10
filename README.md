@@ -146,7 +146,7 @@ gobboclippy-0.1.0-Linux/
   scripts/               clippy.py
   licenses/              notices for everything redistributed here
   lib/
-    libpython3.11.so     7.4 MB
+    libpython3.11.so.1.0 7.4 MB   the SONAME, not the linker name
     python311.zip        2.4 MB   stdlib, test suites excluded
     python3.11/lib-dynload/        stdlib C extensions
 ```
@@ -155,6 +155,14 @@ gobboclippy-0.1.0-Linux/
 `$ORIGIN:$ORIGIN/lib`, and every runtime path is resolved from
 `SDL_GetBasePath()`, so the directory can be moved anywhere. Verified by
 running it from a different filesystem with `env -i`.
+
+Both shipped libraries are staged under their SONAME — `libSDL3.so.0`,
+`libpython3.11.so.1.0` — because that is the name the loader searches for, and
+a package that gets it wrong does not fail. It falls through to the host's copy
+and works on every machine that has one, which is every machine that builds or
+tests it. CI relocates the package, clears `LD_LIBRARY_PATH` and asserts that
+`ldd` resolves both inside the tree, because running the binary cannot tell the
+difference.
 
 Packaging strips every binary in the staging tree, and this is not cosmetic:
 the interpreter is somebody else's build, and whether it arrives stripped is

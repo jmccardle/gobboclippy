@@ -84,12 +84,35 @@ jobs:
       # Runs the packaged tree, not the build tree, so it exercises the
       # relocated layout: the bundled interpreter, the stdlib zip, the loose
       # extension modules, and on macOS the rewritten install names.
+      #
+      # Relocated and with the environment stripped, for the same reason the
+      # macOS job does it: setup-python puts its own lib directory on
+      # LD_LIBRARY_PATH, so a package that fails to bundle its interpreter
+      # still runs perfectly well on this runner. That is exactly how
+      # lib/libpython3.11.so shipped under the linker name rather than the
+      # SONAME and went unnoticed -- the loader quietly used the host's.
       - name: Smoke test (Linux)
         if: runner.os == 'Linux'
         run: |
-          cd build/stage/gobboclippy-*-Linux
-          xvfb-run -a dbus-run-session -- ./gobboclippy --capabilities
-          xvfb-run -a dbus-run-session -- ./gobboclippy --script scripts/smoke_test.py
+          mv build/stage/gobboclippy-*-Linux "$RUNNER_TEMP/relocated"
+          cd "$RUNNER_TEMP/relocated"
+          ldd ./gobboclippy
+
+          # Every library we ship has to resolve inside the package. Anything
+          # that escapes to the host is a library we are not actually bundling.
+          escaped=$(ldd ./gobboclippy \
+                    | grep -E 'libpython|libSDL3' \
+                    | grep -v "$PWD" || true)
+          if [ -n "$escaped" ]; then
+            echo "::error::bundled libraries resolved outside the package:"
+            echo "$escaped"
+            exit 1
+          fi
+
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            xvfb-run -a dbus-run-session -- ./gobboclippy --capabilities
+          env -u PYTHONHOME -u PYTHONPATH -u LD_LIBRARY_PATH \
+            xvfb-run -a dbus-run-session -- ./gobboclippy --script scripts/smoke_test.py
 
       # Twice, on purpose. The effect compositor avoids SDL_ComposeCustomBlendMode
       # so that it works on the software renderer, which supports none -- and the
