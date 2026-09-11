@@ -87,8 +87,11 @@ set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
 set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
 set(WEBP_BUILD_EXTRAS     OFF CACHE BOOL "" FORCE)
 
+# The GitHub mirror rather than chromium.googlesource.com, which is upstream:
+# the other two dependencies come from GitHub, a runner that can reach them can
+# reach this, and one host is one thing to be blocked by.
 FetchContent_Declare(libwebp
-    GIT_REPOSITORY https://chromium.googlesource.com/webm/libwebp
+    GIT_REPOSITORY https://github.com/webmproject/libwebp.git
     GIT_TAG        v1.6.0
     GIT_SHALLOW    TRUE
     GIT_PROGRESS   TRUE
