@@ -15,6 +15,7 @@
 namespace {
 
 App* g_app = nullptr;
+bool g_interpreter = false;
 std::map<std::string, PyObject*> g_hooks;
 
 // Every entry point goes through this so a script that somehow runs before
@@ -22,8 +23,7 @@ std::map<std::string, PyObject*> g_hooks;
 App* app_or_error()
 {
     if (!g_app) {
-        PyErr_SetString(PyExc_RuntimeError,
-                        "clippy: host not bound (called too early?)");
+        PyErr_SetString(PyExc_RuntimeError, PyClippy::noHostMessage("clippy"));
         return nullptr;
     }
     return g_app;
@@ -485,6 +485,29 @@ bool registerModule(std::string& error_out)
 }
 
 void bind(App* app) { g_app = app; }
+
+void setInterpreterMode() { g_interpreter = true; }
+bool interpreterMode()    { return g_interpreter; }
+
+const char* noHostMessage(const char* what)
+{
+    // Held in a static so the pointer outlives this call: PyErr_SetString
+    // copies, but callers pass this straight through and one of them may not.
+    static std::string message;
+
+    if (g_interpreter) {
+        message = std::string(what) +
+            ": there is no window in --python mode, so nothing here can draw.\n"
+            "Run the script with --script instead:\n"
+            "    gobboclippy --script <script.py>\n"
+            "--python is the bundled interpreter -- pip, -c, -m, a client "
+            "script -- and clippy.pref_path() is the part of this module that "
+            "works there.";
+    } else {
+        message = std::string(what) + ": host not bound (called too early?)";
+    }
+    return message.c_str();
+}
 
 namespace {
 

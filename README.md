@@ -386,6 +386,14 @@ python — pip's build isolation, `multiprocessing`, anything that spawns
 `[sys.executable, "-c", ...]`. Nothing in this mode touches SDL video: a pip
 install runs on a machine with no display.
 
+**`clippy` is importable here, and has no window behind it.** That is what
+makes `scripts/pet_ctl.py` possible: a client needs `clippy.pref_path()` to
+find the running pet's socket, and computing that path any other way means
+hardcoding a platform convention. Everything that needs a window —
+`set_size`, `show`, `Texture`, `Font.measure` — raises and says to use
+`--script` instead. Running a pet script under `--python` is the easy mistake,
+so the error names the fix rather than guessing at a startup race.
+
 What `pip install` puts in `site/` is what `--script` can import. That works
 because `sys.prefix` is `site/` and `sys.base_prefix` is the package root —
 CPython's own model of a venv — and it is done that way for a reason beyond

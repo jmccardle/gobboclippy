@@ -12,6 +12,19 @@ namespace PyClippy {
 // Register the module. Must be called before Py_InitializeFromConfig.
 bool registerModule(std::string& error_out);
 
+// Say that this process is `--python`: the module exists, and no window,
+// renderer or tray will ever be bound to it. Only the mode itself knows, and
+// the difference is worth carrying because it is the difference between two
+// error messages -- one that names the mistake the user actually made, and one
+// that guesses at a race that cannot happen. In windowed mode bind() runs
+// before any script does, so "called too early" was never the real answer.
+void setInterpreterMode();
+bool interpreterMode();
+
+// What to tell a script that asked for something only a window can give.
+// Shared with PyDraw so the renderer and the host answer alike.
+const char* noHostMessage(const char* what);
+
 // Point the module at the live host. Call after the App exists.
 void bind(App* app);
 

@@ -506,6 +506,10 @@ int runInterpreter(int argc, char** argv, int start)
         std::fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }
+    // Nothing will ever be bound to it here, and saying so is what lets the
+    // module answer "--python has no window, use --script" rather than
+    // guessing at a startup race.
+    PyClippy::setInterpreterMode();
 
     // argv[0] stays: CPython treats it as the program and starts parsing at
     // argv[1]. Everything the pet's own parser would have seen is gone.

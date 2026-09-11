@@ -10,6 +10,7 @@
 #include "Animation.h"
 #include "AppPaths.h"
 #include "Caption.h"
+#include "PyClippy.h"
 #include "Drawable.h"
 #include "Easing.h"
 #include "Font.h"
@@ -281,7 +282,7 @@ int texture_init(PyObject* self, PyObject* args, PyObject* kwds)
     SDL_Renderer* r = Stage::instance().renderer;
     if (!r) {
         PyErr_SetString(PyExc_RuntimeError,
-                        "clippy.Texture: no renderer yet (called too early?)");
+                        PyClippy::noHostMessage("clippy.Texture"));
         return -1;
     }
 
@@ -384,7 +385,8 @@ PyObject* font_measure(PyObject* self, PyObject* args, PyObject* kwds)
 
     SDL_Renderer* r = Stage::instance().renderer;
     if (!r) {
-        PyErr_SetString(PyExc_RuntimeError, "clippy.Font.measure: no renderer yet");
+        PyErr_SetString(PyExc_RuntimeError,
+                        PyClippy::noHostMessage("clippy.Font.measure"));
         return nullptr;
     }
 
