@@ -49,7 +49,7 @@ currently closed. Cirrus CI stopped running jobs in June 2026.
 app bundle:
 
 ```
-gobboclippy-0.2.0-macOS/          the DMG's volume
+gobboclippy-0.3.0-macOS/          the DMG's volume
   Applications -> /Applications   the drag target
   gobboclippy.app/Contents/
     Info.plist                    cmake/Info.plist.in, configured

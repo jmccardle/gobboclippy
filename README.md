@@ -8,10 +8,11 @@ you unzip and run.
 This is the *canonical base* — the platform, build and distribution layer —
 plus the sprite, animation and text subset harvested from
 [McRogueFace](https://github.com/jmccardle/McRogueFace) on top of it — plus a
-microphone, and a listening assistant built on subprocesses that speak JSON
-lines. Speech bubbles, per-drawable hit testing and a config window are
-deliberately still absent; see [docs/harvest.md](docs/harvest.md) for what was
-taken, what was cut, and why.
+microphone, a listening assistant built on subprocesses that speak JSON lines,
+and a socket other processes can drive the pet through — including an agent.
+Speech bubbles, per-drawable hit testing and a config window are deliberately
+still absent; see [docs/harvest.md](docs/harvest.md) for what was taken, what
+was cut, and why.
 
 ```
       ╭───────────────╮
@@ -47,7 +48,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.2.0  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.3.0  (SDL 3.4.16, Python 3.11)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -144,7 +145,7 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.2.0-Linux/
+gobboclippy-0.3.0-Linux/
   gobboclippy            820 KB
   python3 -> gobboclippy          the same binary, dispatched on argv[0]
   libSDL3.so.0           3.6 MB
@@ -720,6 +721,22 @@ raises a `silent` event when an open device delivers nothing but zeroes, which
 is what a muted input looks like from in here and is otherwise
 indistinguishable from a transcriber that has stopped working.
 
+**Pets and the control channel — working on Linux; the format is checked
+everywhere.** The WebP decoder, and that an undecodable one raises rather than
+returning a placeholder, are in the smoke test, so CI checks them on all three
+platforms. What CI cannot check is anything past that: installing a pet needs
+the network and driving one needs a window, and runners have neither.
+
+Locally the whole path runs — catalogue, install, the nine states on screen,
+the socket, `pet_ctl.py` from a shell, and the τ extension's two halves against
+a live pet via `tests/test_gobbopet.py`. `tests/test_emote.py` is the piece
+with the judgement in it and runs under a bare `python3` anywhere, because the
+classifier is a pure function of the two arguments τ hands its hook.
+
+The Windows and macOS control channel is unverified. On Windows it is a
+different transport — loopback TCP and a token, because CPython exposes no
+`AF_UNIX` there — and that branch has never run.
+
 macOS needed packaging work before it could listen at all: it grants microphone
 access per *bundle*, through a TCC prompt driven by
 `NSMicrophoneUsageDescription` in an `Info.plist`, and a bare executable has
@@ -732,7 +749,7 @@ still unverified.
 the packaged zip is extracted and runs the full smoke test — the drawing layer
 included — on its bundled Python: window, tray, transparency, always-on-top,
 textures, the tree, animation and text, all reporting `windows` as the video
-driver. That is the authoritative check, and v0.2.0 passed it.
+driver. That is the authoritative check, and v0.3.0 passed it.
 
 Locally the same tree cross-compiles from Debian with mingw-w64 and runs under
 wine, which is a convenience rather than proof — wine is not Windows — but it
@@ -791,7 +808,7 @@ Mono (Apache-2.0). Their notices ship in `licenses/` inside the package, with
 an index:
 
 ```
-gobboclippy-0.2.0-Linux/
+gobboclippy-0.3.0-Linux/
   licenses/
     README.txt                    what each file covers
     gobboclippy-MIT.txt
