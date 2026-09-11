@@ -260,13 +260,19 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Only for the tag's own annotation, which is the release notes. Tags are
-      # signed objects rather than refs, so fetch-depth: 0 is what makes the
-      # message readable at all -- a shallow checkout gets the commit and not
-      # the tag object hanging off it.
+      # Only for the tag's own annotation, which is the release notes.
+      #
+      # fetch-tags matters and fetch-depth does not, which is the opposite of
+      # what this said until v0.3.0 tried to release. On a tag push,
+      # actions/checkout writes its own LIGHTWEIGHT tag at the commit and does
+      # not fetch the annotated object, whatever the depth -- so the guard
+      # below called a correctly annotated tag lightweight and refused to
+      # publish it. The step re-fetches the ref itself as well; between the
+      # two, the annotation is present no matter how checkout behaves next.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/download-artifact@v4
         with: { path: dist }
@@ -294,6 +300,14 @@ jobs:
       # are a commit message nobody wrote for an audience.
       - name: Release notes from the tag annotation
         run: |
+          # Force, because checkout has very likely already put a lightweight
+          # tag of the same name here, and that local ref is not the object we
+          # want to read. Fetching it explicitly is what makes the guard below
+          # a statement about what was pushed rather than about what checkout
+          # happened to leave behind.
+          git fetch --force origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+
           if [ "$(git cat-file -t "refs/tags/$GITHUB_REF_NAME")" != "tag" ]; then
             echo "::error::$GITHUB_REF_NAME is a lightweight tag; re-tag with -a"
             exit 1
