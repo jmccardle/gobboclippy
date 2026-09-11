@@ -487,6 +487,26 @@ int runInterpreter(int argc, char** argv, int start)
         return 1;
     }
 
+    // The same clippy module the windowed mode gets, with no host ever bound
+    // to it. Two things make that the right shape rather than a lie:
+    //
+    //   * Everything needing the host already checks for it and raises
+    //     "host not bound", so `clippy.show()` under --python says what is
+    //     wrong instead of AttributeError.
+    //   * clippy.pref_path() needs no host at all -- it is SDL_GetPrefPath,
+    //     a filesystem call -- and it is the one thing a client program run
+    //     under this interpreter genuinely needs, because finding the app's
+    //     own directory any other way means hardcoding a platform path.
+    //
+    // It also stops `import clippy` resolving to scripts/clippy.py when the
+    // scripts directory is on sys.path: a registered builtin is found by
+    // BuiltinImporter, which runs before any path entry.
+    if (!PyClippy::registerModule(err)) {
+        PyConfig_Clear(&config);
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+
     // argv[0] stays: CPython treats it as the program and starts parsing at
     // argv[1]. Everything the pet's own parser would have seen is gone.
     std::vector<char*> py_argv;

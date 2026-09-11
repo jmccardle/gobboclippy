@@ -165,8 +165,18 @@ PyObject* c_capabilities(PyObject*, PyObject*)
         Py_DECREF(s);
     }
 
+    PyObject* formats = PyList_New(0);
+    if (!formats) { Py_DECREF(notes); return nullptr; }
+    for (const auto& f : c.image_formats) {
+        PyObject* s = PyUnicode_FromString(f.c_str());
+        if (!s || PyList_Append(formats, s) < 0) {
+            Py_XDECREF(s); Py_DECREF(formats); Py_DECREF(notes); return nullptr;
+        }
+        Py_DECREF(s);
+    }
+
     PyObject* d = Py_BuildValue(
-        "{s:s, s:s, s:O, s:O, s:O, s:O, s:O, s:O, s:N}",
+        "{s:s, s:s, s:O, s:O, s:O, s:O, s:O, s:O, s:N, s:N}",
         "platform",      c.platform.c_str(),
         "video_driver",  c.video_driver.c_str(),
         "borderless",    c.borderless    ? Py_True : Py_False,
@@ -175,8 +185,9 @@ PyObject* c_capabilities(PyObject*, PyObject*)
         "skip_taskbar",  c.skip_taskbar  ? Py_True : Py_False,
         "tray",          c.tray          ? Py_True : Py_False,
         "microphone",    c.microphone    ? Py_True : Py_False,
+        "image_formats", formats,
         "notes",         notes);
-    if (!d) Py_DECREF(notes);
+    if (!d) { Py_DECREF(formats); Py_DECREF(notes); }
     return d;
 }
 

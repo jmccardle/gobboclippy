@@ -37,6 +37,11 @@ Capabilities Capabilities::probe(SDL_Window* window, SDL_WindowFlags requested)
     c.platform     = plat ? plat : "unknown";
     c.video_driver = drv  ? drv  : "unknown";
 
+    // Compiled in, not probed -- see the header. Both decoders are
+    // unconditional today, so this is a statement of what the build contains
+    // rather than a runtime question, and it is the line a fork edits.
+    c.image_formats = {"png", "webp"};
+
     const SDL_WindowFlags got = SDL_GetWindowFlags(window);
 
     auto granted = [&](SDL_WindowFlags f) { return (got & f) != 0; };
@@ -92,7 +97,12 @@ std::string Capabilities::report() const
       << "  transparent   : " << yn(transparent) << "\n"
       << "  skip taskbar  : " << yn(skip_taskbar) << "\n"
       << "  tray icon     : " << yn(tray) << "\n"
-      << "  microphone    : " << yn(microphone) << "\n";
+      << "  microphone    : " << yn(microphone) << "\n"
+      << "  image formats : ";
+    for (size_t i = 0; i < image_formats.size(); ++i) {
+        o << (i ? ", " : "") << image_formats[i];
+    }
+    o << "\n";
 
     for (const auto& n : notes) {
         o << "  ! " << n << "\n";

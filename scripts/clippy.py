@@ -421,4 +421,10 @@ def main():
     after(0.6, speech.start)
 
 
-main()
+# Guarded, even though --script always runs this as __main__. This directory
+# ends up on sys.path, and scripts/clippy.py shares a name with the host's
+# built-in module -- so an `import clippy` from an interpreter with no host
+# (the --python mode, or tau loading an extension from gobbo/) resolves to that
+# file. Without a guard, that import silently runs a demo.
+if __name__ == "__main__":
+    main()

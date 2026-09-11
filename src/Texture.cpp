@@ -1,8 +1,78 @@
 #include "Texture.h"
 
+#include <cstring>
+
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #include "stb_image.h"
+
+#include <webp/decode.h>
+
+namespace {
+
+// A WebP file is a RIFF container whose form type is "WEBP": 'R','I','F','F',
+// four length bytes, then 'W','E','B','P'. Twelve bytes is the whole test, and
+// it is the file's own claim about itself rather than a guess from the
+// extension -- petdex names some sheets .png and serves WebP bytes.
+bool isWebP(const unsigned char* head, size_t len)
+{
+    return len >= 12 && std::memcmp(head, "RIFF", 4) == 0 &&
+           std::memcmp(head + 8, "WEBP", 4) == 0;
+}
+
+// One image file to RGBA pixels, whichever of the two decoders owns it.
+//
+// Both callers need this -- load() and silhouette(), which decodes the source
+// a second time rather than keeping a copy of every texture's pixels for a
+// pass most of them never take. Having it in one place is not tidiness: while
+// this lived only in load(), a WebP sprite with glow_flat lost its halo and
+// said so only in the log, because silhouette() still went straight to stb.
+//
+// `webp_out` tells the caller which allocator to free with. Crossing those
+// over is silent until it is not.
+unsigned char* decodeRGBA(const std::string& path, int& w, int& h,
+                          bool& webp_out, std::string& error_out)
+{
+    size_t file_len  = 0;
+    void*  file_data = SDL_LoadFile(path.c_str(), &file_len);
+    if (!file_data) {
+        error_out = "could not read " + path + ": " + SDL_GetError();
+        return nullptr;
+    }
+
+    const unsigned char* bytes = static_cast<const unsigned char*>(file_data);
+    webp_out = isWebP(bytes, file_len);
+
+    unsigned char* pixels = nullptr;
+    if (webp_out) {
+        // WebPDecodeRGBA gives exactly the layout the PNG path forces with its
+        // 4-channel request, so every caller sees one format.
+        pixels = WebPDecodeRGBA(bytes, file_len, &w, &h);
+        if (!pixels) {
+            error_out = path + ": not a decodable WebP (truncated, or an "
+                               "animation, which this does not read)";
+        }
+    } else {
+        int channels = 0;
+        // Force 4 channels: we always want RGBA regardless of how the PNG was
+        // saved.
+        pixels = stbi_load_from_memory(bytes, (int)file_len, &w, &h, &channels, 4);
+        if (!pixels) {
+            error_out = "stbi_load(" + path + "): " +
+                        (stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+        }
+    }
+
+    SDL_free(file_data);
+    return pixels;
+}
+
+void freeRGBA(unsigned char* pixels, bool webp)
+{
+    if (webp) WebPFree(pixels); else stbi_image_free(pixels);
+}
+
+} // namespace
 
 std::shared_ptr<Texture> Texture::load(SDL_Renderer* renderer,
                                        const std::string& path,
@@ -14,14 +84,12 @@ std::shared_ptr<Texture> Texture::load(SDL_Renderer* renderer,
         return nullptr;
     }
 
-    int w = 0, h = 0, channels = 0;
-    // Force 4 channels: we always want RGBA regardless of how the PNG was saved.
-    unsigned char* pixels = stbi_load(path.c_str(), &w, &h, &channels, 4);
-    if (!pixels) {
-        error_out = "stbi_load(" + path + "): " +
-                    (stbi_failure_reason() ? stbi_failure_reason() : "unknown");
-        return nullptr;
-    }
+    int  w = 0, h = 0;
+    bool webp = false;
+    unsigned char* pixels = decodeRGBA(path, w, h, webp, error_out);
+    if (!pixels) return nullptr;
+
+    auto free_pixels = [webp](unsigned char* p) { freeRGBA(p, webp); };
 
     // 0 means "the whole image is one frame" -- McRogueFace's default, and the
     // right one for a PNG that came straight out of a generator.
@@ -29,7 +97,7 @@ std::shared_ptr<Texture> Texture::load(SDL_Renderer* renderer,
     if (cell_h <= 0) cell_h = h;
 
     if (w % cell_w != 0 || h % cell_h != 0) {
-        stbi_image_free(pixels);
+        free_pixels(pixels);
         error_out = path + ": " + std::to_string(w) + "x" + std::to_string(h) +
                     " does not divide evenly into " + std::to_string(cell_w) +
                     "x" + std::to_string(cell_h) + " cells";
@@ -40,13 +108,13 @@ std::shared_ptr<Texture> Texture::load(SDL_Renderer* renderer,
         w, h, SDL_PIXELFORMAT_RGBA32, pixels, w * 4);
     if (!surface) {
         error_out = std::string("SDL_CreateSurfaceFrom: ") + SDL_GetError();
-        stbi_image_free(pixels);
+        free_pixels(pixels);
         return nullptr;
     }
 
     SDL_Texture* tex = SDL_CreateTextureFromSurface(renderer, surface);
     SDL_DestroySurface(surface);
-    stbi_image_free(pixels);
+    free_pixels(pixels);
 
     if (!tex) {
         error_out = std::string("SDL_CreateTextureFromSurface: ") + SDL_GetError();
@@ -79,14 +147,17 @@ SDL_Texture* Texture::silhouette(SDL_Renderer* renderer)
     if (m_flat_failed) return nullptr;
 
     // Decoded again rather than kept from load(): every texture would otherwise
-    // carry a copy of its pixels for a pass most of them never take.
-    int w = 0, h = 0, channels = 0;
-    stbi_uc* pixels = stbi_load(m_source.c_str(), &w, &h, &channels, 4);
+    // carry a copy of its pixels for a pass most of them never take. Through
+    // the same helper load() uses, so this reads every format the program does
+    // -- going straight to stb here is how a WebP sprite loses its halo.
+    int  w = 0, h = 0;
+    bool webp = false;
+    std::string err;
+    unsigned char* pixels = decodeRGBA(m_source, w, h, webp, err);
     if (!pixels) {
         m_flat_failed = true;
         SDL_Log("texture '%s': cannot build the glow_flat silhouette: %s",
-                m_source.c_str(),
-                stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+                m_source.c_str(), err.c_str());
         return nullptr;
     }
 
@@ -103,7 +174,7 @@ SDL_Texture* Texture::silhouette(SDL_Renderer* renderer)
         m_flat = SDL_CreateTextureFromSurface(renderer, surface);
         SDL_DestroySurface(surface);
     }
-    stbi_image_free(pixels);
+    freeRGBA(pixels, webp);
 
     if (!m_flat) {
         m_flat_failed = true;

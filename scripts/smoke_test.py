@@ -9,6 +9,7 @@ tray behaviour without needing to click it.
 Exits non-zero on the first failed assertion.
 """
 
+import os
 import sys
 
 import clippy
@@ -185,6 +186,31 @@ except OSError as exc:
     clippy.log(f"PASS  indivisible cell size raises OSError ({str(exc)[:40]}...)")
 else:
     FAILURES.append("Texture() accepted a cell size that does not divide the image")
+
+# --- image formats ----------------------------------------------------------
+#
+# Which decoders this build has. It is compiled in rather than probed, so the
+# check is that the report exists and says what the binary can actually do --
+# a script about to download a few thousand WebP sheets reads this first.
+formats = caps.get("image_formats") or []
+check("png is decodable", "png" in formats, True)
+check("webp is decodable", "webp" in formats, True)
+
+# A file whose bytes are not an image it can read must raise. No asset here is
+# WebP -- none ever will be, since the format support exists for art the user
+# downloads and nothing downloaded is committed -- so this checks the refusal
+# rather than a successful decode, which is the half that can go quietly wrong.
+bad = os.path.join(clippy.pref_path(), "smoke-not-an-image.webp")
+with open(bad, "wb") as fh:
+    fh.write(b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 16)
+try:
+    clippy.Texture(bad, 192, 208)
+except OSError as exc:
+    clippy.log(f"PASS  undecodable webp raises OSError ({str(exc)[:44]}...)")
+else:
+    FAILURES.append("Texture() accepted a WebP header with no image behind it")
+finally:
+    os.unlink(bad)
 
 try:
     clippy.Texture("does_not_exist.png")

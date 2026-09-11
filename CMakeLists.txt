@@ -59,7 +59,42 @@ FetchContent_Declare(stb
     GIT_PROGRESS   TRUE
 )
 
-FetchContent_MakeAvailable(SDL3 stb)
+# libwebp, decoder only. stb_image has no WebP path at any setting, and the
+# sprite sheets this is for are overwhelmingly WebP -- petdex publishes 4,679
+# of them against 147 PNGs, so "PNG only" means "cannot read the art".
+#
+# Every tool target defaults ON and has to be turned off by name; left alone
+# this builds cwebp, vwebp and five other binaries we would never ship.
+#
+# `webpdecoder` rather than `webp`: the latter is the decoder AND the encoder in
+# one archive. Both produce an identical binary -- a static archive contributes
+# only the objects something references, and nothing here ever writes a WebP --
+# but naming the decoder target says which half is meant, and it is the half
+# that gets compiled.
+#
+# It is not free: the stripped Linux binary goes from 421 KB to 839 KB, which is
+# the decoder's SIMD paths. That is 2% of the package and the price of reading
+# 97% of the art, but it is the largest single thing in this binary that is not
+# SDL, so it is written down rather than discovered.
+set(WEBP_BUILD_CWEBP      OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP      OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP   OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP   OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP      OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO   OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX    OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS     OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(libwebp
+    GIT_REPOSITORY https://chromium.googlesource.com/webm/libwebp
+    GIT_TAG        v1.6.0
+    GIT_SHALLOW    TRUE
+    GIT_PROGRESS   TRUE
+)
+
+FetchContent_MakeAvailable(SDL3 stb libwebp)
 
 # Python. Two paths: a native build finds the host interpreter, a cross-build
 # is handed a prebuilt Windows kit. Both end up providing GC_PY_TAG/GC_PY_VERSION
@@ -135,6 +170,7 @@ else()
     target_link_libraries(gobboclippy PRIVATE SDL3::SDL3)
 endif()
 target_link_libraries(gobboclippy PRIVATE ${GC_PYTHON_TARGET})
+target_link_libraries(gobboclippy PRIVATE webpdecoder)
 
 # The wheel's file name is a build-time fact the binary states rather than
 # globs for, in the same way it states the stdlib zip's name.
@@ -248,6 +284,8 @@ if(GC_BUILD_TESTS)
     else()
         target_link_libraries(fx_pixels PRIVATE SDL3::SDL3)
     endif()
+    # It compiles Texture.cpp, so it decodes what the program decodes.
+    target_link_libraries(fx_pixels PRIVATE webpdecoder)
     if(APPLE)
         set_target_properties(fx_pixels PROPERTIES
             BUILD_WITH_INSTALL_RPATH TRUE

@@ -371,6 +371,11 @@ set(GC_NOTICES
     "${GC_PIP_LICENSE}"              "pip-MIT.txt"
     "${CMAKE_SOURCE_DIR}/assets/JetBrainsMono-LICENSE.txt"
                                      "JetBrainsMono-Apache-2.0.txt"
+    # Two files, one work. libwebp's BSD grant is accompanied by a separate
+    # patent grant, and shipping the licence without it would be shipping half
+    # of the terms.
+    "${libwebp_SOURCE_DIR}/COPYING"  "libwebp-BSD-3-Clause.txt"
+    "${libwebp_SOURCE_DIR}/PATENTS"  "libwebp-PATENTS.txt"
 )
 
 list(LENGTH GC_NOTICES _n)
@@ -399,7 +404,7 @@ set(GC_LICENSE_INDEX "${CMAKE_BINARY_DIR}/licenses-README.txt")
 file(WRITE "${GC_LICENSE_INDEX}"
 "gobboclippy ${PROJECT_VERSION} -- ${GC_PLATFORM}
 
-This package is MIT licensed and redistributes five other works. Their
+This package is MIT licensed and redistributes six other works. Their
 notices are here in full.
 
   gobboclippy-MIT.txt             gobboclippy itself. MIT.
@@ -417,6 +422,9 @@ notices are here in full.
                                   that wheel, under its dist-info.
   JetBrainsMono-Apache-2.0.txt    JetBrains Mono 1.0.3, the shipped typeface,
                                   at assets/JetBrainsMono.ttf. Apache-2.0.
+  libwebp-BSD-3-Clause.txt        libwebp, the WebP decoder linked into the
+                                  binary. BSD-3-Clause, and its separate
+                                  patent grant is libwebp-PATENTS.txt.
 ")
 if(WIN32)
     file(APPEND "${GC_LICENSE_INDEX}"

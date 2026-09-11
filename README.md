@@ -56,6 +56,7 @@ gobboclippy 0.2.0  (SDL 3.4.16, Python 3.11)
   skip taskbar  : yes
   tray icon     : yes
   microphone    : yes
+  image formats : png, webp
 ```
 
 | | Windows | macOS | X11 | Wayland |
@@ -144,11 +145,11 @@ Produces a relocatable directory and an archive:
 
 ```
 gobboclippy-0.2.0-Linux/
-  gobboclippy            411 KB
+  gobboclippy            820 KB
   python3 -> gobboclippy          the same binary, dispatched on argv[0]
   libSDL3.so.0           3.6 MB
   assets/                SVG sources + rendered PNGs + JetBrains Mono
-  scripts/               clippy.py, assistant.py, gobbo/
+  scripts/               clippy.py, assistant.py, pet_demo.py, pet_ctl.py, gobbo/
   licenses/              notices for everything redistributed here
   lib/
     libpython3.11.so.1.0 7.4 MB   the SONAME, not the linker name
@@ -158,7 +159,7 @@ gobboclippy-0.2.0-Linux/
   site/                            sys.prefix; pip installs under here
 ```
 
-**19 MB on disk, 9.3 MB compressed.** The binary's RUNPATH is
+**19 MB on disk, 9.6 MB compressed.** The binary's RUNPATH is
 `$ORIGIN:$ORIGIN/lib`, and every runtime path is resolved from
 `SDL_GetBasePath()`, so the directory can be moved anywhere. Verified by
 running it from a different filesystem with `env -i`.
@@ -255,6 +256,115 @@ and the model, under a `"tau"` key.
 agent is fed committed utterances, not a raw transcript stream. It is thin
 today and exists for what goes there next — a wake word, a name resolver, an
 end-of-utterance projection.
+
+### Pets
+
+[petdex.dev](https://petdex.dev) publishes several thousand animated pets as
+plain HTTPS assets — a sprite sheet and a little metadata each, no API key and
+nothing to run. `scripts/pet_demo.py` downloads one and puts it on the desktop:
+
+```sh
+./gobboclippy --script scripts/pet_demo.py      # double-click to change emote
+```
+
+A sheet is a grid of 192×208 cells, eight to a row, one row per animation
+state, which is exactly the atlas model `clippy.Texture` already has. So a
+state's frames are a contiguous run of `sprite_index` and playing one is the
+frame-sequence animation from [the stage](#the-stage) — there is no pet-shaped
+code in the drawing layer, and none was added.
+
+```python
+from gobbo import pet, petdex
+
+petdex.search("otter")           # the catalogue, cached after the first call
+petdex.install("boba")           # -> clippy.pref_path()/pets/boba/
+p = pet.Pet("boba")              # a clippy.Sprite, under p.sprite
+p.play("waving")                 # loops
+p.play_once("jumping")           # once, then back to idle
+```
+
+**No pet is bundled, and none ever will be.** They are user-submitted fan art
+and petdex claims no rights to the underlying IP, so this repository ships the
+ability to read the format and the user downloads the art. `assets/` stays ours.
+
+The nine state names — `idle`, `running-right`, `running-left`, `waving`,
+`jumping`, `failed`, `waiting`, `running`, `review` — are the same for every
+pet, which is what makes them worth building on. They live in
+`scripts/gobbo/states.py`, which imports nothing, because τ's interpreter needs
+them too and has no `clippy` to import.
+
+They are *not* shipped with a pet. petdex's `pet.json` carries a name, a
+description and a file name, and says nothing about rows, frame counts or
+timing; that table is transcribed from petdex's own site source. The frame
+counts matter: rows are padded to eight cells with transparent frames, so a
+four-frame wave played across all eight columns spends half its loop invisible.
+See [docs/petdex.md](docs/petdex.md) for the format in full.
+
+Reading WebP is why libwebp is linked — 97% of the corpus is WebP and stb_image
+decodes none of it. `--capabilities` reports which decoders a build has.
+
+### The control channel
+
+A script can let other processes drive the pet. One JSON object per line over a
+socket, the same shape as the transcriber and the agent:
+
+```sh
+./gobboclippy --script scripts/pet_demo.py &
+./gobboclippy --python scripts/pet_ctl.py play waving
+./gobboclippy --python scripts/pet_ctl.py state
+./gobboclippy --python scripts/pet_ctl.py say "back in a minute"
+```
+
+**The verbs are the script's, not the channel's.** `scripts/gobbo/control.py`
+owns the transport and knows nothing about pets; `pet_demo.py` registers `play`,
+`say`, `state`, `show` and `hide`. An unknown verb answers with the list of ones
+that host does serve.
+
+A request never runs on the socket thread. It goes onto the same queue the
+transcriber and the agent already use, the frame hook runs it, and the socket
+thread waits for the answer — so [the rule](#the-microphone) that only the frame
+hook touches the drawing layer holds for every verb without a script having to
+think about it.
+
+The endpoint is `control.json` in `clippy.pref_path()`. On POSIX it names a unix
+socket at mode 0600, and the filesystem is the access control. On Windows
+CPython exposes no `AF_UNIX`, so it is a loopback TCP port guarded by a random
+token — any local process can reach a loopback port, which is what the token is
+for. Clients read the file either way, so client code is one path on both.
+
+### The pet, from an agent
+
+`scripts/gobbo/gobbopet.py` is a [τ](https://github.com/jmccardle/agent-harness-py)
+extension. It runs inside τ's interpreter, not this one, and reaches the pet
+through the control channel like any other client:
+
+```sh
+tau -e scripts/gobbo/gobbopet.py \
+    --ext-config gobbopet.endpoint="$HOME/.local/share/gobboclippy/control.json"
+```
+
+It registers two halves that are deliberately independent, because which one
+you want is a policy question the extension refuses to answer:
+
+- **tools** — `pet_play`, `pet_show`, `pet_hide`, `pet_say`, `pet_info` — so a
+  model can move the pet on purpose, with a closed enum of the nine states;
+- **a turn-end emote**, so the pet reacts with no model involvement at all.
+  `scripts/gobbo/emote.py` classifies what the turn *did* — tools errored,
+  files written, how many round trips — rather than reading the prose for a
+  mood.
+
+Both are on by default and they do not fight: the emote stands down when the
+model already moved the pet that turn, which it detects by looking for its own
+tool names in the transcript rather than by keeping a flag there is no right
+moment to clear. `--ext-config gobbopet.mode=tools|emote|both` picks.
+
+The hook is `user_turn_end`, which fires once per utterance — `turn_end` fires
+once per LLM completion, so an answer that took six tool round trips would emote
+six times.
+
+`pet_info` hands the model the pet's own description **fenced and labelled as
+untrusted**: those are stranger-written strings from a public gallery, and they
+are data rather than instructions.
 
 ### The interpreter
 
@@ -567,13 +677,17 @@ beside it and in the package's `licenses/`.
 | `src/PyClippy.*` | the `clippy` extension module: host calls and `clippy.mic` |
 | `src/Drawable.*` | transform, tree, alignment, the property system, `Stage` |
 | `src/Sprite.*` `src/Caption.*` | the two drawables |
-| `src/Texture.*` `src/Font.*` | PNG atlases (stb_image), glyph atlases (stb_truetype) |
+| `src/Texture.*` `src/Font.*` | PNG and WebP atlases (stb_image, libwebp), glyph atlases (stb_truetype) |
 | `src/Animation.*` `src/Easing.*` | the animation manager and 36 curves |
 | `src/Effects.*` | the glow and aberration composites, and why they use no custom blend mode |
 | `tests/fx_pixels.cpp` | pixel-level check of those composites (`-DGC_BUILD_TESTS=ON`) |
 | `src/PyDraw.*` | Python types for all of the above — the only file here that includes `Python.h` |
 | `scripts/assistant.py` | the listening pet: mic, transcriber, agent, captions |
-| `scripts/gobbo/` | its parts — `config`, `asr`, `accumulate`, `tau`; stdlib only |
+| `scripts/pet_demo.py` | a downloaded petdex pet, and the control channel |
+| `scripts/pet_ctl.py` | the control channel's shell head |
+| `scripts/gobbo/` | their parts — `config`, `asr`, `accumulate`, `tau`, `petdex`, `pet`, `states`, `control`, `emote`, `gobbopet`; stdlib only |
+| `tests/test_emote.py` | the emote classifier, under a bare `python3` |
+| `tests/test_gobbopet.py` | the τ extension, against a running pet |
 | `cmake/Package.cmake` | the zip-and-ship staging tree |
 | `cmake/ZipStdlib.cmake` | stdlib zip construction |
 | `cmake/StripTree.cmake` | strip the staged binaries (Linux, Windows) |
