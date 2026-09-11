@@ -165,7 +165,14 @@ add_executable(gobboclippy
     src/PyDraw.cpp
 )
 
-target_include_directories(gobboclippy PRIVATE src ${stb_SOURCE_DIR})
+# libwebp's own target exports its source root, not the directory <webp/...>
+# is relative to -- the headers are under src/. Without naming it, the include
+# resolves to a system /usr/include/webp/decode.h where one happens to exist,
+# compiling against one libwebp while linking another, and fails outright where
+# none does. The Windows cross-build is where that showed up.
+set(GC_WEBP_INCLUDE ${libwebp_SOURCE_DIR}/src)
+
+target_include_directories(gobboclippy PRIVATE src ${stb_SOURCE_DIR} ${GC_WEBP_INCLUDE})
 
 if(GC_STATIC_SDL)
     target_link_libraries(gobboclippy PRIVATE SDL3::SDL3-static)
@@ -281,7 +288,7 @@ if(GC_BUILD_TESTS)
         src/Sprite.cpp
         src/Texture.cpp
     )
-    target_include_directories(fx_pixels PRIVATE src ${stb_SOURCE_DIR})
+    target_include_directories(fx_pixels PRIVATE src ${stb_SOURCE_DIR} ${GC_WEBP_INCLUDE})
     if(GC_STATIC_SDL)
         target_link_libraries(fx_pixels PRIVATE SDL3::SDL3-static)
     else()
