@@ -14,12 +14,12 @@ a change of mind that should be argued for.
 Items point at the prose that explains them rather than restating it. The
 explanations live in `README.md` and `docs/harvest.md` and should stay there.
 
-**Where this stands.** v0.3.0 is tagged and released; `main` is one commit ahead
-of it. The base is done: window, transparency, tray, the harvested drawing
-layer, the effect compositor, the bundled interpreter and a relocatable package
-on three platforms; a microphone; petdex pets in nine states; a control channel
-and a τ extension that drives one. Windows and macOS build and smoke-test in CI.
-There are no TODO markers in the tree.
+**Where this stands.** v0.4.0 is tagged and released. The base is done: window,
+transparency, tray, the harvested drawing layer, the effect compositor, the
+bundled interpreter and a relocatable package on three platforms; a microphone;
+petdex pets in nine states; a control channel and a τ extension that drives one;
+a settings window whose fields Python defines. Windows and macOS build and
+smoke-test in CI. There are no TODO markers in the tree.
 
 ---
 

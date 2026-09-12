@@ -48,7 +48,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.3.0  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.4.0  (SDL 3.4.16, Python 3.11)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -145,8 +145,8 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.3.0-Linux/
-  gobboclippy            820 KB
+gobboclippy-0.4.0-Linux/
+  gobboclippy            1.6 MB
   python3 -> gobboclippy          the same binary, dispatched on argv[0]
   libSDL3.so.0           3.6 MB
   assets/                SVG sources + rendered PNGs + JetBrains Mono
@@ -160,7 +160,7 @@ gobboclippy-0.3.0-Linux/
   site/                            sys.prefix; pip installs under here
 ```
 
-**19 MB on disk, 9.6 MB compressed.** The binary's RUNPATH is
+**21 MB on disk, 10 MB compressed.** The binary's RUNPATH is
 `$ORIGIN:$ORIGIN/lib`, and every runtime path is resolved from
 `SDL_GetBasePath()`, so the directory can be moved anywhere. Verified by
 running it from a different filesystem with `env -i`.
@@ -944,25 +944,34 @@ startup.
 
 MIT, © 2026 John McCardle. See [LICENSE](LICENSE).
 
-A packaged build redistributes four other works in binary form, under their own
-terms: SDL3 (zlib), stb (MIT / public domain), CPython (PSF-2.0) and JetBrains
-Mono (Apache-2.0). Their notices ship in `licenses/` inside the package, with
-an index:
+A packaged build redistributes seven other works in binary form, under their own
+terms: SDL3 (zlib), stb (MIT / public domain), CPython (PSF-2.0), pip (MIT),
+JetBrains Mono (Apache-2.0), libwebp (BSD-3-Clause, with its patent grant) and
+Dear ImGui (MIT). Their notices ship in `licenses/` inside the package, with an
+index:
 
 ```
-gobboclippy-0.3.0-Linux/
+gobboclippy-0.4.0-Linux/
   licenses/
     README.txt                    what each file covers
     gobboclippy-MIT.txt
     SDL3-zlib.txt
     stb-MIT-or-public-domain.txt
     CPython-PSF.txt
+    pip-MIT.txt
     JetBrainsMono-Apache-2.0.txt
+    libwebp-BSD-3-Clause.txt
+    libwebp-PATENTS.txt
+    dear-imgui-MIT.txt
 ```
 
-The first four are copied from the tree each belongs to — the pinned SDL
-checkout, the pinned stb checkout, the interpreter being bundled — so a notice
-cannot describe a different version than the one shipped. A missing notice is a
+libwebp is two files and one work: the BSD grant is accompanied by a separate
+patent grant, and shipping the licence without it would be shipping half the
+terms.
+
+Each is copied from the tree it belongs to — the pinned SDL checkout, the
+pinned stb checkout, the interpreter being bundled — so a notice cannot
+describe a different version than the one shipped. A missing notice is a
 configure error.
 
 The font is the exception: a `.ttf` has no source tree to take a notice from,
