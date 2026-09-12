@@ -561,12 +561,13 @@ PyObject* c_settings_open(PyObject*, PyObject* args)
         PyGILState_Release(gil);
     };
 
-    // The preview ends with the window, whatever else on_close does, and it
-    // ends here rather than in the script so that a handler that raises cannot
-    // leave the pet on screen with no banner to explain it.
+    // The preview ends with the window, and the pet asks for its place in the
+    // stacking order back. Both happen here rather than in the script, so that
+    // a handler that raises cannot leave the pet on screen with no banner to
+    // explain it, or behind the windows it is supposed to sit above.
     App* app = a;
     spec.on_close = [cb, app]() {
-        app->endPreview();
+        app->onSettingsClosed();
         if (!cb->on_close) return;
         PyGILState_STATE gil = PyGILState_Ensure();
         PyObject* r = PyObject_CallNoArgs(cb->on_close);

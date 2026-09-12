@@ -159,8 +159,30 @@ void PetWindow::show()
 
     // Re-assert stacking: some window managers drop the above-state when a
     // window is unmapped and remapped.
-    SDL_SetWindowAlwaysOnTop(m_window, true);
+    reassertAlwaysOnTop();
     m_visible = true;
+}
+
+void PetWindow::reassertAlwaysOnTop()
+{
+    if (!m_window) return;
+
+    // Off and on again, rather than simply on.
+    //
+    // SDL's X11 path asks the window manager for _NET_WM_STATE_ADD of
+    // _NET_WM_STATE_ABOVE, and adding a state a window already has is a no-op.
+    // So the obvious call -- set it to true -- reaches a window that lost the
+    // *property* and cannot reach one that still has the property while the
+    // window manager has stacked it somewhere else. Those are different
+    // failures and only one of them was ever handled here. Removing the state
+    // first makes the request a real change, so the manager restacks in both
+    // cases, and costs one round trip on a transition that already waits for
+    // the window to map.
+    //
+    // Deliberately not SDL_RaiseWindow: that takes focus on X11, and a desktop
+    // pet must never take the caret away from whatever the user is typing into.
+    SDL_SetWindowAlwaysOnTop(m_window, false);
+    SDL_SetWindowAlwaysOnTop(m_window, true);
 }
 
 void PetWindow::hide()

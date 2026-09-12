@@ -95,6 +95,19 @@ struct App {
 
     // The settings window has gone. A pet that was only up to be looked at goes
     // back to hidden; one the user pressed Show on stays.
+    //
+    // The dialog was always-on-top as well -- it has to be, or the pet would
+    // cover the thing configuring it -- and two windows in that layer stack in
+    // whatever order the window manager decided. So the pet asks for its place
+    // back on the way out. It is cheap, it happens once, and the alternative is
+    // a pet that can end up behind other windows with no way out but restarting
+    // the process.
+    void onSettingsClosed()
+    {
+        endPreview();
+        window.reassertAlwaysOnTop();
+    }
+
     void endPreview()
     {
         if (!m_preview_engaged) return;

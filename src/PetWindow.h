@@ -23,6 +23,14 @@ public:
     void toggle();
     bool visible() const { return m_visible; }
 
+    // Ask the window manager for the above-state again, and mean it.
+    //
+    // Nothing else in this program does. A pet that is still flagged
+    // always-on-top but is no longer stacked that way has no way back short of
+    // restarting the process, which is not a state a desktop pet should be able
+    // to get stuck in.
+    void reassertAlwaysOnTop();
+
     void render();
 
     // The one-image shortcut: a single PNG, aspect-preserved and centred,
