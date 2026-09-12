@@ -106,6 +106,13 @@ for label, spec in (
     ("a field with no key", {"fields": [{"label": "nameless"}]}),
     ("a field of unknown type", {"fields": [{"key": "k", "type": "colour"}]}),
     ("a choice with no choices", {"fields": [{"key": "k", "type": "choice"}]}),
+    # A slider needs two ends. Unbounded, it would silently become a plain box
+    # -- a widget the schema did not ask for.
+    ("a range with no bounds", {"fields": [{"key": "k", "type": "range"}]}),
+    ("a range with min == max",
+     {"fields": [{"key": "k", "type": "range", "min": 5, "max": 5}]}),
+    ("a range with min > max",
+     {"fields": [{"key": "k", "type": "range", "min": 9, "max": 2}]}),
     ("a spec with no fields", {"title": "empty"}),
 ):
     try:
@@ -121,7 +128,9 @@ clippy.settings_open({
     "title": "smoke test",
     "fields": [
         {"key": "window.x", "label": "X", "tab": "Window",
-         "type": "int", "value": 100, "min": 0, "max": 4096, "live": True},
+         "type": "range", "value": 100, "min": 0, "max": 4096, "live": True},
+        {"key": "window.width", "label": "W", "tab": "Window",
+         "type": "range", "value": 300, "min": 64, "max": 512, "live": True},
         {"key": "demo.name", "label": "Name", "type": "text", "value": "clippy"},
         {"key": "demo.loud", "label": "Loud", "type": "bool", "value": True},
         {"key": "demo.voice", "label": "Voice", "type": "choice",
@@ -139,6 +148,53 @@ except RuntimeError:
     clippy.log("PASS  a second settings window is refused")
 else:
     FAILURES.append("settings_open() stacked a second window")
+
+# --- reading and writing an open dialog -------------------------------------
+# settings_set is what a linked pair of fields needs -- a locked aspect ratio
+# moves the field the user is not touching. It deliberately does not fire
+# on_change, or a width adjusting a height adjusting a width would not
+# terminate; that half cannot be checked here, because on_change only fires from
+# the event loop and none of this has reached it.
+
+check("settings_get reads a field", clippy.settings_get("window.width"), 300)
+check("settings_get types an int", isinstance(clippy.settings_get("window.width"), int), True)
+check("settings_get types a bool", clippy.settings_get("demo.loud"), True)
+check("settings_get types a choice", clippy.settings_get("demo.voice"), "ryan")
+
+clippy.settings_set("window.width", 480)
+check("settings_set moves a range", clippy.settings_get("window.width"), 480)
+
+# A range is clamped on the way in, so a linked field driven past the end of its
+# own scale stops there rather than showing a number the slider cannot reach.
+clippy.settings_set("window.width", 9999)
+check("settings_set clamps to max", clippy.settings_get("window.width"), 512)
+clippy.settings_set("window.width", -5)
+check("settings_set clamps to min", clippy.settings_get("window.width"), 64)
+
+clippy.settings_set("demo.name", "gobbo")
+check("settings_set moves text", clippy.settings_get("demo.name"), "gobbo")
+clippy.settings_set("demo.voice", "amy")
+check("settings_set moves a choice", clippy.settings_get("demo.voice"), "amy")
+
+for label, call in (
+    ("an absent key", lambda: clippy.settings_set("nope.not.here", 1)),
+    ("an absent key for get", lambda: clippy.settings_get("nope.not.here")),
+):
+    try:
+        call()
+    except KeyError:
+        clippy.log(f"PASS  settings_set/get refuses {label}")
+    else:
+        FAILURES.append(f"settings_set/get accepted {label}")
+
+# Not one of the offered choices is a bug in the handler, not in the schema, and
+# is told apart from a missing field.
+try:
+    clippy.settings_set("demo.voice", "not-a-voice")
+except ValueError:
+    clippy.log("PASS  settings_set refuses a value outside the choices")
+else:
+    FAILURES.append("settings_set accepted a value outside the choices")
 
 clippy.hide()
 check("hidden with the dialog up", clippy.visible(), False)

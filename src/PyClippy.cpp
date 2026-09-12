@@ -353,18 +353,31 @@ bool settingsField(PyObject* d, Settings::Field& f)
     const std::string type = settingsStr(d, "type", "text");
     PyObject* value = PyDict_GetItemString(d, "value");    // borrowed, may be null
 
-    if (type == "int") {
-        f.kind = Settings::Field::Kind::Int;
+    if (type == "int" || type == "range") {
+        f.kind = type == "range" ? Settings::Field::Kind::Range
+                                 : Settings::Field::Kind::Int;
         if (value && value != Py_None) {
             f.int_value = PyLong_AsLongLong(value);
             if (PyErr_Occurred()) return false;
         }
         PyObject* lo = PyDict_GetItemString(d, "min");
         PyObject* hi = PyDict_GetItemString(d, "max");
-        if (lo && hi && lo != Py_None && hi != Py_None) {
+        const bool bounded = lo && hi && lo != Py_None && hi != Py_None;
+        if (bounded) {
             f.int_min = PyLong_AsLongLong(lo);
             f.int_max = PyLong_AsLongLong(hi);
             if (PyErr_Occurred()) return false;
+        }
+        // A slider needs two ends. Without them there is nothing to draw, and
+        // an unbounded one would silently become a plain box -- a widget the
+        // schema did not ask for.
+        if (f.kind == Settings::Field::Kind::Range &&
+            (!bounded || f.int_min >= f.int_max)) {
+            PyErr_Format(PyExc_ValueError,
+                         "clippy.settings_open(): field '%s' is a range and "
+                         "needs 'min' and 'max', with min < max",
+                         f.key.c_str());
+            return false;
         }
     } else if (type == "bool") {
         f.kind = Settings::Field::Kind::Bool;
@@ -408,7 +421,7 @@ bool settingsField(PyObject* d, Settings::Field& f)
     } else {
         PyErr_Format(PyExc_ValueError,
                      "clippy.settings_open(): field '%s' has unknown type '%s' "
-                     "(expected 'int', 'text', 'bool' or 'choice')",
+                     "(expected 'int', 'range', 'text', 'bool' or 'choice')",
                      f.key.c_str(), type.c_str());
         return false;
     }
@@ -420,7 +433,8 @@ bool settingsField(PyObject* d, Settings::Field& f)
 PyObject* settingsValue(const Settings::Field& f)
 {
     switch (f.kind) {
-    case Settings::Field::Kind::Int:  return PyLong_FromLongLong(f.int_value);
+    case Settings::Field::Kind::Int:
+    case Settings::Field::Kind::Range: return PyLong_FromLongLong(f.int_value);
     case Settings::Field::Kind::Bool: return PyBool_FromLong(f.bool_value ? 1 : 0);
     case Settings::Field::Kind::Choice:
         if (f.choice_index >= 0 && f.choice_index < (int)f.choices.size())
@@ -566,6 +580,87 @@ PyObject* c_settings_open(PyObject*, PyObject* args)
         return nullptr;
     }
     Py_RETURN_NONE;
+}
+
+// Write a value back into the open dialog, without it counting as an edit the
+// user made. See Settings.h: this is what a locked aspect ratio needs, and the
+// reason it does not re-enter on_change is that a width adjusting a height
+// adjusting a width would not terminate.
+PyObject* c_settings_set(PyObject*, PyObject* args)
+{
+    const char* key = nullptr;
+    PyObject* value = nullptr;
+    if (!PyArg_ParseTuple(args, "sO:settings_set", &key, &value)) return nullptr;
+
+    const Settings::Field* f = Settings::find(key);
+    if (!f) {
+        PyErr_Format(PyExc_KeyError,
+                     "clippy.settings_set(): no field '%s' in the open settings "
+                     "window (or no window is open)", key);
+        return nullptr;
+    }
+
+    bool ok = false;
+    switch (f->kind) {
+    case Settings::Field::Kind::Int:
+    case Settings::Field::Kind::Range: {
+        const long long v = PyLong_AsLongLong(value);
+        if (v == -1 && PyErr_Occurred()) return nullptr;
+        ok = Settings::setInt(key, v);
+        break;
+    }
+    case Settings::Field::Kind::Bool:
+        ok = Settings::setBool(key, PyObject_IsTrue(value) == 1);
+        break;
+    case Settings::Field::Kind::Choice: {
+        const char* utf8 = PyUnicode_AsUTF8(value);
+        if (!utf8) return nullptr;
+        if (!Settings::setChoice(key, utf8)) {
+            // Distinguished from a missing field: the key is right and the
+            // value is not one this dialog is offering, which is a bug in the
+            // handler rather than in the schema.
+            PyErr_Format(PyExc_ValueError,
+                         "clippy.settings_set(): '%s' is not one of the choices "
+                         "offered for '%s'", utf8, key);
+            return nullptr;
+        }
+        ok = true;
+        break;
+    }
+    case Settings::Field::Kind::Text:
+    default: {
+        const char* utf8 = PyUnicode_AsUTF8(value);
+        if (!utf8) return nullptr;
+        ok = Settings::setText(key, utf8);
+        break;
+    }
+    }
+
+    if (!ok) {
+        PyErr_Format(PyExc_TypeError,
+                     "clippy.settings_set(): wrong value type for field '%s'", key);
+        return nullptr;
+    }
+    Py_RETURN_NONE;
+}
+
+// The inverse of settings_set: what a field currently holds, typed as Python
+// sees it. A live handler that has to reason about a field the user is not
+// touching -- the other half of a locked ratio, a bound that depends on another
+// setting -- should ask the dialog rather than infer it from the world.
+PyObject* c_settings_get(PyObject*, PyObject* args)
+{
+    const char* key = nullptr;
+    if (!PyArg_ParseTuple(args, "s:settings_get", &key)) return nullptr;
+
+    const Settings::Field* f = Settings::find(key);
+    if (!f) {
+        PyErr_Format(PyExc_KeyError,
+                     "clippy.settings_get(): no field '%s' in the open settings "
+                     "window (or no window is open)", key);
+        return nullptr;
+    }
+    return settingsValue(*f);
 }
 
 PyObject* c_previewing(PyObject*, PyObject*)
@@ -792,6 +887,13 @@ PyMethodDef kMethods[] = {
      "visible() is False at the same time, and both are true answers: the\n"
      "window is mapped, and the user has not asked to see it. A script that\n"
      "draws anything meaning 'I am up' wants this one."},
+    {"settings_set", c_settings_set, METH_VARARGS,
+     "settings_set(key, value) -> move a field the user did not touch.\n"
+     "Does not fire on_change -- the host was told this value, nobody\n"
+     "edited it -- so a locked ratio is a linkage rather than a recursion.\n"
+     "It still counts as a change to save."},
+    {"settings_get", c_settings_get, METH_VARARGS,
+     "settings_get(key) -> what that field currently holds, typed."},
     {"settings_close", c_settings_close, METH_NOARGS,
      "Close the settings window, as Cancel would but without on_cancel."},
     {"settings_is_open", c_settings_open_p, METH_NOARGS,

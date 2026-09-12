@@ -57,7 +57,8 @@ bool   g_open = false;
 std::string valueOf(const Field& f)
 {
     switch (f.kind) {
-    case Field::Kind::Int:    return std::to_string(f.int_value);
+    case Field::Kind::Int:
+    case Field::Kind::Range:  return std::to_string(f.int_value);
     case Field::Kind::Bool:   return f.bool_value ? "true" : "false";
     case Field::Kind::Choice:
         if (f.choice_index >= 0 && f.choice_index < (int)f.choices.size())
@@ -132,6 +133,74 @@ void tooltip(const Field& f)
     }
 }
 
+// Width of the number box beside a range slider. Five digits plus the frame:
+// every bound this dialog deals in is a screen coordinate.
+constexpr float kRangeBoxW = 66.0f;
+
+void clampToBounds(Field& f)
+{
+    if (f.int_min != f.int_max)
+        f.int_value = std::max(f.int_min, std::min(f.int_max, f.int_value));
+}
+
+// The mouse wheel, over a range that is hovered or being typed in.
+//
+// SetItemKeyOwner is what stops the wheel doing two things at once: without it
+// the field list under the cursor scrolls at the same time, and the value the
+// user was aiming at slides out from under the pointer. Claiming the wheel for
+// the hovered item is ImGui's own mechanism for exactly this.
+//
+// One unit per notch, ten with Shift. Deliberately not scaled to the range: a
+// slider that spans a whole screen is the coarse control, and the reason to
+// reach for the wheel is that you want the pixel you want.
+bool wheelAdjust(Field& f, bool over)
+{
+    if (!over) return false;
+    ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+
+    const float wheel = ImGui::GetIO().MouseWheel;
+    if (wheel == 0.0f) return false;
+
+    const long long step = ImGui::GetIO().KeyShift ? 10 : 1;
+    f.int_value += (long long)(wheel > 0.0f ? step : -step);
+    clampToBounds(f);
+    return true;
+}
+
+// A slider and a number box that edit the same value.
+//
+// Returns true while the user is still inside the box: a half-typed number is
+// not an edit yet, and reporting it would send the window to 1, then 16, then
+// 161 on the way to 1612. The slider does not get that treatment -- dragging it
+// is meant to be watched, so every position it passes through is reported.
+bool drawRange(Field& f)
+{
+    const float box = kRangeBoxW + ImGui::GetStyle().ItemSpacing.x;
+
+    ImGui::SetNextItemWidth(-box);
+    // An empty format leaves the number to the box beside it rather than
+    // printing it twice.
+    ImGui::SliderScalar("##slider", ImGuiDataType_S64, &f.int_value,
+                        &f.int_min, &f.int_max, "");
+    const bool over_slider = ImGui::IsItemHovered();
+    const bool dragging    = ImGui::IsItemActive();
+
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(kRangeBoxW);
+    if (ImGui::InputScalar("##box", ImGuiDataType_S64, &f.int_value,
+                           nullptr, nullptr, "%lld"))
+        clampToBounds(f);
+    const bool typing  = ImGui::IsItemActive();
+    const bool over_box = ImGui::IsItemHovered();
+
+    // The wheel works over either half, and while the box has the caret, so
+    // "click in the box then scroll" does what it looks like it should.
+    wheelAdjust(f, over_slider || over_box || typing);
+
+    (void)dragging;
+    return typing;
+}
+
 // Draw one field and say whether the user is still inside it. A value being
 // typed is not an edit yet -- see reportChanges().
 bool drawField(Field& f)
@@ -145,15 +214,16 @@ bool drawField(Field& f)
     ImGui::SetNextItemWidth(-FLT_MIN);
 
     switch (f.kind) {
+    case Field::Kind::Range: {
+        const bool typing = drawRange(f);
+        ImGui::PopID();
+        return typing;
+    }
     case Field::Kind::Int: {
         const long long step = 1, step_fast = 10;
         if (ImGui::InputScalar("", ImGuiDataType_S64, &f.int_value,
-                               &step, &step_fast, "%lld")) {
-            // min == max means unbounded, which is how a field says it has no
-            // opinion rather than accidentally pinning everything to zero.
-            if (f.int_min != f.int_max)
-                f.int_value = std::max(f.int_min, std::min(f.int_max, f.int_value));
-        }
+                               &step, &step_fast, "%lld"))
+            clampToBounds(f);
         break;
     }
     case Field::Kind::Bool:
@@ -334,6 +404,81 @@ void drawWindow()
 } // namespace
 
 bool open() { return g_open; }
+
+namespace {
+
+// The field for a key, and its index, so a setter can suppress the echo by
+// updating what on_change last saw alongside the value itself.
+Field* findMutable(const std::string& key, size_t* index)
+{
+    for (size_t i = 0; i < g.fields.size(); ++i) {
+        if (g.fields[i].key != key) continue;
+        if (index) *index = i;
+        return &g.fields[i];
+    }
+    return nullptr;
+}
+
+// Shared tail of every setter: remember the new value as already-reported, so
+// the change the host was told about does not come back to Python as a change
+// the user made.
+void accept(size_t index)
+{
+    if (index < g.reported.size()) g.reported[index] = valueOf(g.fields[index]);
+}
+
+} // namespace
+
+const Field* find(const std::string& key)
+{
+    return g_open ? findMutable(key, nullptr) : nullptr;
+}
+
+bool setInt(const std::string& key, long long value)
+{
+    size_t i = 0;
+    Field* f = g_open ? findMutable(key, &i) : nullptr;
+    if (!f || (f->kind != Field::Kind::Int && f->kind != Field::Kind::Range))
+        return false;
+    f->int_value = value;
+    clampToBounds(*f);
+    accept(i);
+    return true;
+}
+
+bool setText(const std::string& key, const std::string& value)
+{
+    size_t i = 0;
+    Field* f = g_open ? findMutable(key, &i) : nullptr;
+    if (!f || f->kind != Field::Kind::Text) return false;
+    f->text_value = value;
+    accept(i);
+    return true;
+}
+
+bool setBool(const std::string& key, bool value)
+{
+    size_t i = 0;
+    Field* f = g_open ? findMutable(key, &i) : nullptr;
+    if (!f || f->kind != Field::Kind::Bool) return false;
+    f->bool_value = value;
+    accept(i);
+    return true;
+}
+
+bool setChoice(const std::string& key, const std::string& value)
+{
+    size_t i = 0;
+    Field* f = g_open ? findMutable(key, &i) : nullptr;
+    if (!f || f->kind != Field::Kind::Choice) return false;
+    for (size_t c = 0; c < f->choices.size(); ++c) {
+        if (f->choices[c] != value) continue;
+        f->choice_index = (int)c;
+        accept(i);
+        return true;
+    }
+    return false;   // not one of the offered choices
+}
 
 bool dirty()
 {

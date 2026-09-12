@@ -21,7 +21,13 @@ namespace Settings {
 
 // One editable setting. Only `kind` decides which widget is drawn.
 struct Field {
-    enum class Kind { Int, Text, Bool, Choice };
+    // Range is an Int that has to have bounds, drawn as a slider with the
+    // number in a box beside it. The two are one widget: the slider is the
+    // coarse control, the box is the exact one, and the wheel is the fine one.
+    // Kept a separate kind rather than "an Int that happens to have min/max",
+    // because plenty of bounded integers -- a port, a sample rate -- would be
+    // absurd as a slider, and the schema should say which is meant.
+    enum class Kind { Int, Range, Text, Bool, Choice };
 
     std::string tab;          // tab to draw it under; "" is the first tab
     std::string key;          // opaque here; the identity Python knows it by
@@ -34,10 +40,12 @@ struct Field {
     // window position you cannot see is a number you are guessing at.
     bool        live = false;
 
-    // Int
+    // Int and Range. For a Range the bounds are required and checked; for an
+    // Int, min == max means unbounded, which is how a field says it has no
+    // opinion rather than accidentally pinning everything to zero.
     long long   int_value = 0;
     long long   int_min   = 0;
-    long long   int_max   = 0;   // min == max means unbounded
+    long long   int_max   = 0;
 
     // Text
     std::string text_value;
@@ -96,6 +104,28 @@ bool handleEvent(const SDL_Event& e);
 
 // Draw one frame. Cheap and safe when nothing is open.
 void render();
+
+// --- writing back into an open dialog ---------------------------------------
+//
+// A live handler sometimes has to move a field the user did not touch: a locked
+// aspect ratio means dragging Width moves Height, and the Height slider has to
+// follow or the dialog is showing a number the window does not have.
+//
+// A value set this way does NOT fire on_change. The distinction is the point --
+// the host was *told* this value, the user did not *edit* it -- and without it
+// a width that adjusts a height that adjusts a width is an infinite recursion
+// rather than a locked ratio. It does count towards dirty(), because it is
+// still a change someone will want saved.
+//
+// find() is how a caller learns a field's kind before choosing a setter, and how
+// it reads one back; it returns nullptr for a key this dialog does not have. Each setter returns false
+// if the key is absent or is a different kind, rather than quietly doing
+// nothing.
+const Field* find(const std::string& key);
+bool setInt(const std::string& key, long long value);
+bool setText(const std::string& key, const std::string& value);
+bool setBool(const std::string& key, bool value);
+bool setChoice(const std::string& key, const std::string& value);
 
 // True while there are edits neither applied nor cancelled. The Apply button is
 // disabled without them, and OK writes nothing.

@@ -85,40 +85,75 @@ class WindowSection(Section):
     tab = "Window"
     prefix = "window"
 
-    # The same bounds --size enforces in main.cpp, so a size the dialog accepts
-    # is a size the command line would have.
-    MIN_EDGE, MAX_EDGE = 32, 2048
-
-    # Wide enough for a pet parked on a second monitor to the left.
-    MIN_POS, MAX_POS = -32768, 32768
+    # Deliberately narrower than --size's 32..2048. A desktop pet outside this
+    # is either too small to read or big enough to be a wallpaper, and a slider
+    # spanning the wider range would make every useful size a pixel apart. The
+    # flag still accepts what it always did; this is the dialog's opinion.
+    MIN_EDGE, MAX_EDGE = 64, 512
 
     def __init__(self):
         self._baseline = None
+        # Width divided by height, held while the ratio is locked. None when it
+        # is not, which is also how :meth:`_link` knows to do nothing.
+        self._ratio = None
+
+    # --- the position range --------------------------------------------------
+    #
+    # Zero to the far edge of the work area, so the top of the slider really
+    # does park the pet entirely off the screen -- that is a position somebody
+    # may want, and a slider that stopped at "still fully visible" would be
+    # deciding otherwise on their behalf.
+    #
+    # The work area rather than the raw display, because that is the number the
+    # host reports and the one that excludes panels and docks. The cost is that
+    # a pet on a monitor to the left of the primary needs a negative x, and this
+    # slider does not go there. Type it into the box and the slider pins to
+    # zero; that case wants a display picker rather than a wider slider.
+
+    def _position_bounds(self):
+        x, y, width, height = clippy.display_bounds()
+        return x + width, y + height
 
     def fields(self, cfg):
         x, y = clippy.position()
         w, h = clippy.size()
         self._baseline = (x, y, w, h)
 
-        def geom(key, label, value, lo, hi, help_text):
+        locked = bool((cfg.get("window") or {}).get("fixed_ratio"))
+        self._ratio = (w / h) if (locked and h) else None
+
+        max_x, max_y = self._position_bounds()
+
+        def rng(key, label, value, lo, hi, help_text):
             return {
-                "tab": self.tab, "key": key, "label": label, "type": "int",
+                "tab": self.tab, "key": key, "label": label, "type": "range",
                 "value": value, "min": lo, "max": hi, "live": True,
                 "help": help_text,
             }
 
         return [
-            geom("window.x", "Position X", x, self.MIN_POS, self.MAX_POS,
-                 "Pixels from the left edge of the desktop. Ignored on "
-                 "Wayland, which does not let an application place itself."),
-            geom("window.y", "Position Y", y, self.MIN_POS, self.MAX_POS,
-                 "Pixels from the top edge of the desktop."),
-            geom("window.width", "Width", w, self.MIN_EDGE, self.MAX_EDGE,
-                 "The window is the pet's whole canvas; art that does not fit "
-                 "is clipped, not scaled."),
-            geom("window.height", "Height", h, self.MIN_EDGE, self.MAX_EDGE,
-                 "Room for the pet plus whatever the script draws under it."),
+            rng("window.x", "Position X", x, 0, max_x,
+                "Pixels from the left edge of the desktop. The far end of the "
+                "slider is off the screen, which is a place you are allowed to "
+                "put it. Ignored on Wayland, which does not let an application "
+                "place itself."),
+            rng("window.y", "Position Y", y, 0, max_y,
+                "Pixels from the top edge of the desktop."),
+            rng("window.width", "Width", w, self.MIN_EDGE, self.MAX_EDGE,
+                "The window is the pet's whole canvas; art that does not fit "
+                "is clipped, not scaled."),
+            rng("window.height", "Height", h, self.MIN_EDGE, self.MAX_EDGE,
+                "Room for the pet plus whatever the script draws under it."),
+            {
+                "tab": self.tab, "key": "window.fixed_ratio",
+                "label": "Fixed ratio", "type": "bool", "value": locked,
+                "live": True,
+                "help": "Keep the width and height in the proportion they are "
+                        "in now. Dragging either one moves the other.",
+            },
         ]
+
+    # --- live edits ----------------------------------------------------------
 
     def changed(self, key, value):
         # The pet has to be on screen for any of this to mean anything. Asking
@@ -128,14 +163,52 @@ class WindowSection(Section):
 
         x, y = clippy.position()
         w, h = clippy.size()
-        if key == "window.x":
+
+        if key == "window.fixed_ratio":
+            # Locked at whatever the proportions are the moment it is ticked.
+            # Nothing moves: turning the lock on is a statement about what
+            # happens next, not a resize.
+            self._ratio = (w / h) if (value and h) else None
+        elif key == "window.x":
             clippy.set_position(value, y)
         elif key == "window.y":
             clippy.set_position(x, value)
         elif key == "window.width":
-            clippy.set_size(value, h)
+            self._resize(value, self._link(value, h, vertical=True))
         elif key == "window.height":
-            clippy.set_size(w, value)
+            self._resize(self._link(value, w, vertical=False), value)
+
+    def _link(self, driver, other, vertical):
+        """The other edge, given the one that just moved.
+
+        Returns ``other`` unchanged when the ratio is not locked. When it is,
+        the result is clamped to the same bounds the sliders use, so the pair
+        stops at the end of the scale instead of the follower running off it.
+
+        At a stop the proportion is not held -- there is nowhere left for the
+        follower to go -- but it is not forgotten either: ``self._ratio`` is
+        never recomputed by a drag, so coming back off the stop restores it.
+        Clamping the follower rather than the driver is deliberate. Pinning the
+        driver would mean writing a value back into the slider the user is
+        holding, and a slider that is being dragged rewrites itself from the
+        mouse every frame -- the window would end up one size and the dialog
+        showing another.
+        """
+        if not self._ratio:
+            return other
+        wanted = round(driver / self._ratio) if vertical else round(driver * self._ratio)
+        return max(self.MIN_EDGE, min(self.MAX_EDGE, int(wanted)))
+
+    def _resize(self, width, height):
+        clippy.set_size(width, height)
+
+        # The slider the user is not holding has to follow, or the dialog is
+        # showing a number the window does not have. settings_set is the write
+        # that does not come back as an edit; without that this would recurse.
+        clippy.settings_set("window.width", width)
+        clippy.settings_set("window.height", height)
+
+    # --- saving and cancelling ------------------------------------------------
 
     def store(self, cfg, values):
         window = cfg.setdefault("window", {})
@@ -143,6 +216,7 @@ class WindowSection(Section):
         window["y"] = values["window.y"]
         window["width"] = values["window.width"]
         window["height"] = values["window.height"]
+        window["fixed_ratio"] = values["window.fixed_ratio"]
 
     def committed(self):
         self._baseline = (clippy.position() + clippy.size())

@@ -330,10 +330,28 @@ clippy.settings_open({
 })
 ```
 
-`type` is `int`, `text`, `bool` or `choice`; a choice carries `choices` and
-crosses the boundary as the chosen string, never as an index, so reordering the
-list cannot silently change what a config file means. An unknown type is refused
-at the door rather than drawn as something else.
+`type` is `int`, `range`, `text`, `bool` or `choice`.
+
+A **`range`** is an int that has to have bounds, drawn as a slider with the
+number in a box beside it — the slider is the coarse control, the box is the
+exact one, and the mouse wheel over either is the fine one, one unit per notch
+and ten with Shift. The wheel is claimed for the hovered field, so the list
+underneath does not scroll out from under the value you were aiming at. A range
+without `min` and `max`, or with `min >= max`, is refused: a slider needs two
+ends, and unbounded it would silently become a plain box. Plain `int` stays a
+box with steppers, because plenty of bounded integers — a port, a sample rate —
+would be absurd as a slider.
+
+A **`choice`** carries `choices` and crosses the boundary as the chosen string,
+never as an index, so reordering the list cannot silently change what a config
+file means. An unknown type is refused at the door rather than drawn as
+something else.
+
+`settings_set()` moves a field the user did not touch, which is what a linked
+pair needs. It deliberately does **not** fire `on_change` — the host was *told*
+this value, nobody *edited* it — and without that distinction a width adjusting
+a height adjusting a width would not terminate. It still counts towards dirty,
+because it is still a change someone will want saved.
 
 `on_apply` returns `None` on success, or a string to show in the dialog without
 closing it; a handler that raises is the same answer with the exception for its
@@ -353,8 +371,27 @@ contributes, what a live edit does right now, and how to fold the values back
 into the config. `WindowSection` is the first one, and writes:
 
 ```json
-{ "window": { "x": 1612, "y": 580, "width": 300, "height": 380 } }
+{ "window": { "x": 1612, "y": 580, "width": 300, "height": 380,
+              "fixed_ratio": false } }
 ```
+
+Position runs from 0 to the far edge of the work area, so the top of the slider
+really does park the pet entirely off the screen — that is a position somebody
+may want, and a slider stopping at "still fully visible" would be deciding
+otherwise for them. The cost is that a pet on a monitor to the *left* of the
+primary needs a negative x and the slider does not go there; that case wants a
+display picker rather than a wider slider. Size runs 64–512, deliberately
+narrower than `--size`'s 32–2048, because a slider spanning the wider range
+would put every useful size a pixel apart.
+
+**Fixed ratio** locks width against height at whatever proportion they are in
+when it is ticked. Dragging either moves the other, through `settings_set()`.
+At the end of a scale the pair stops rather than the follower running off it —
+the proportion is not held there, but it is not forgotten either, so coming back
+off the stop restores it. The follower is what gets clamped, never the slider
+being dragged: writing back into a slider the user is holding would leave the
+window one size and the dialog showing another, because a slider rewrites itself
+from the mouse every frame.
 
 Both shipped scripts apply that at startup and fall back to their own placement
 when the file says nothing — a default for somebody who has never expressed a
@@ -518,6 +555,7 @@ clippy.show()
 | `previewing()` | `bool`; on screen only to demonstrate a setting |
 | `settings_open(spec)` | open the settings window on a field schema |
 | `settings_is_open()` / `settings_close()` | is it up; close it |
+| `settings_get(key)` / `settings_set(key, v)` | read or move a field of the open dialog |
 | `preview()` | put the pet on screen to demonstrate a setting |
 | `pref_path()` | per-user directory for this application's own files, created |
 | `quit()` | shut down |
