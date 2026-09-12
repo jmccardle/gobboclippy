@@ -11,6 +11,9 @@
 #include "Drawable.h"
 #include "Mic.h"
 #include "PyDraw.h"
+#include "Settings.h"
+
+#include <memory>
 
 namespace {
 
@@ -46,14 +49,16 @@ PyObject* c_hide(PyObject*, PyObject*)
 PyObject* c_toggle(PyObject*, PyObject*)
 {
     App* a = app_or_error(); if (!a) return nullptr;
-    a->setVisible(!a->window.visible());
+    a->setVisible(!a->visible());
     Py_RETURN_NONE;
 }
 
 PyObject* c_visible(PyObject*, PyObject*)
 {
     App* a = app_or_error(); if (!a) return nullptr;
-    return PyBool_FromLong(a->window.visible() ? 1 : 0);
+    // a->visible(), not window.visible(): during a settings preview the
+    // window is on screen and the pet is still hidden. See App.h.
+    return PyBool_FromLong(a->visible() ? 1 : 0);
 }
 
 PyObject* c_quit(PyObject*, PyObject*)
@@ -203,7 +208,8 @@ PyObject* c_on(PyObject*, PyObject* args)
     }
 
     static const char* kKnown[] = {"show", "hide", "quit", "frame",
-                                   "click", "double_click", "mic", nullptr};
+                                   "click", "double_click", "mic",
+                                   "configure", nullptr};
     bool known = false;
     for (int i = 0; kKnown[i]; ++i) {
         if (std::string(event) == kKnown[i]) { known = true; break; }
@@ -214,7 +220,7 @@ PyObject* c_on(PyObject*, PyObject* args)
         PyErr_Format(PyExc_ValueError,
                      "clippy.on(): unknown event '%s' (expected one of "
                      "'show', 'hide', 'quit', 'frame', 'click', "
-                     "'double_click', 'mic')", event);
+                     "'double_click', 'mic', 'configure')", event);
         return nullptr;
     }
 
@@ -249,6 +255,353 @@ PyObject* c_pref_path(PyObject*, PyObject*)
     PyObject* s = PyUnicode_FromString(p);
     SDL_free(p);
     return s;
+}
+
+// --- clippy.settings --------------------------------------------------------
+//
+// The host renders a schema it does not understand. It knows what an int field
+// is and what OK/Cancel/Apply mean; it does not know what `window.x` is, which
+// file the values came from, or what any of them do. That is all in
+// scripts/gobbo/settings.py, and adding a setting is a dict there rather than a
+// change here.
+//
+// Everything below is the translation between a Python dict and Settings::Spec,
+// plus the GIL. The settings window is drawn from the event loop, which runs
+// without the GIL, so each callback takes it for itself -- the same arrangement
+// the fire* hooks use, and for the same reason.
+
+// The four callables the spec may carry, kept alive for exactly as long as the
+// window is. Held by shared_ptr so the std::functions in the Spec can share
+// them and the last one to go releases the references.
+struct SettingsCallbacks {
+    PyObject* on_change = nullptr;
+    PyObject* on_apply  = nullptr;
+    PyObject* on_cancel = nullptr;
+    PyObject* on_close  = nullptr;
+
+    ~SettingsCallbacks()
+    {
+        // Reached from the event loop, which does not hold the GIL, and a
+        // DECREF without it is a data race on the refcount.
+        PyGILState_STATE gil = PyGILState_Ensure();
+        Py_XDECREF(on_change);
+        Py_XDECREF(on_apply);
+        Py_XDECREF(on_cancel);
+        Py_XDECREF(on_close);
+        PyGILState_Release(gil);
+    }
+};
+
+// A callable under `name`, borrowed from the spec dict and checked. Returns
+// false only on a genuine error; an absent key is a successful nothing.
+bool settingsCallable(PyObject* spec, const char* name, PyObject** out)
+{
+    PyObject* fn = PyDict_GetItemString(spec, name);   // borrowed
+    if (!fn || fn == Py_None) return true;
+    if (!PyCallable_Check(fn)) {
+        PyErr_Format(PyExc_TypeError,
+                     "clippy.settings_open(): %s must be callable", name);
+        return false;
+    }
+    Py_INCREF(fn);
+    *out = fn;
+    return true;
+}
+
+// A string under `key`, or `fallback` when absent. Missing is not an error --
+// every one of these is decoration on a field that already has a key.
+std::string settingsStr(PyObject* d, const char* key, const char* fallback = "")
+{
+    PyObject* v = PyDict_GetItemString(d, key);        // borrowed
+    if (!v || v == Py_None) return fallback;
+    const char* utf8 = PyUnicode_AsUTF8(v);
+    if (!utf8) { PyErr_Clear(); return fallback; }
+    return utf8;
+}
+
+bool settingsBool(PyObject* d, const char* key, bool fallback = false)
+{
+    PyObject* v = PyDict_GetItemString(d, key);        // borrowed
+    if (!v || v == Py_None) return fallback;
+    return PyObject_IsTrue(v) == 1;
+}
+
+// Turn one field dict into a Field. The type decides which of `value`'s
+// spellings is read, and an unknown type is refused rather than guessed at: a
+// field silently rendered as text would be a setting that writes back the wrong
+// shape without ever saying so.
+bool settingsField(PyObject* d, Settings::Field& f)
+{
+    if (!PyDict_Check(d)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "clippy.settings_open(): every field must be a dict");
+        return false;
+    }
+
+    PyObject* key = PyDict_GetItemString(d, "key");    // borrowed
+    if (!key || !PyUnicode_Check(key)) {
+        PyErr_SetString(PyExc_ValueError,
+                        "clippy.settings_open(): a field needs a string 'key'");
+        return false;
+    }
+    f.key   = PyUnicode_AsUTF8(key);
+    f.label = settingsStr(d, "label", f.key.c_str());
+    f.tab   = settingsStr(d, "tab");
+    f.help  = settingsStr(d, "help");
+    f.live  = settingsBool(d, "live");
+
+    const std::string type = settingsStr(d, "type", "text");
+    PyObject* value = PyDict_GetItemString(d, "value");    // borrowed, may be null
+
+    if (type == "int") {
+        f.kind = Settings::Field::Kind::Int;
+        if (value && value != Py_None) {
+            f.int_value = PyLong_AsLongLong(value);
+            if (PyErr_Occurred()) return false;
+        }
+        PyObject* lo = PyDict_GetItemString(d, "min");
+        PyObject* hi = PyDict_GetItemString(d, "max");
+        if (lo && hi && lo != Py_None && hi != Py_None) {
+            f.int_min = PyLong_AsLongLong(lo);
+            f.int_max = PyLong_AsLongLong(hi);
+            if (PyErr_Occurred()) return false;
+        }
+    } else if (type == "bool") {
+        f.kind = Settings::Field::Kind::Bool;
+        f.bool_value = value && PyObject_IsTrue(value) == 1;
+    } else if (type == "choice") {
+        f.kind = Settings::Field::Kind::Choice;
+        PyObject* choices = PyDict_GetItemString(d, "choices");   // borrowed
+        if (!choices || !PySequence_Check(choices)) {
+            PyErr_Format(PyExc_ValueError,
+                         "clippy.settings_open(): field '%s' is a choice and "
+                         "needs a 'choices' sequence", f.key.c_str());
+            return false;
+        }
+        const Py_ssize_t n = PySequence_Size(choices);
+        for (Py_ssize_t i = 0; i < n; ++i) {
+            PyObject* item = PySequence_GetItem(choices, i);       // new
+            if (!item) return false;
+            const char* utf8 = PyUnicode_AsUTF8(item);
+            if (!utf8) { Py_DECREF(item); return false; }
+            f.choices.emplace_back(utf8);
+            Py_DECREF(item);
+        }
+        // The current value is matched by string, not by index, so a config
+        // file keeps meaning the same thing when the list is reordered. A value
+        // that is not in the list selects nothing rather than item zero.
+        f.choice_index = -1;
+        if (value && value != Py_None) {
+            const char* utf8 = PyUnicode_AsUTF8(value);
+            if (!utf8) { PyErr_Clear(); }
+            else for (size_t i = 0; i < f.choices.size(); ++i) {
+                if (f.choices[i] == utf8) { f.choice_index = (int)i; break; }
+            }
+        }
+    } else if (type == "text") {
+        f.kind = Settings::Field::Kind::Text;
+        if (value && value != Py_None) {
+            const char* utf8 = PyUnicode_AsUTF8(value);
+            if (!utf8) return false;
+            f.text_value = utf8;
+        }
+    } else {
+        PyErr_Format(PyExc_ValueError,
+                     "clippy.settings_open(): field '%s' has unknown type '%s' "
+                     "(expected 'int', 'text', 'bool' or 'choice')",
+                     f.key.c_str(), type.c_str());
+        return false;
+    }
+    return true;
+}
+
+// A field's value as Python sees it -- an int stays an int, a choice is the
+// chosen string. New reference.
+PyObject* settingsValue(const Settings::Field& f)
+{
+    switch (f.kind) {
+    case Settings::Field::Kind::Int:  return PyLong_FromLongLong(f.int_value);
+    case Settings::Field::Kind::Bool: return PyBool_FromLong(f.bool_value ? 1 : 0);
+    case Settings::Field::Kind::Choice:
+        if (f.choice_index >= 0 && f.choice_index < (int)f.choices.size())
+            return PyUnicode_FromString(f.choices[(size_t)f.choice_index].c_str());
+        Py_RETURN_NONE;
+    case Settings::Field::Kind::Text:
+    default: return PyUnicode_FromString(f.text_value.c_str());
+    }
+}
+
+PyObject* c_settings_open(PyObject*, PyObject* args)
+{
+    App* a = app_or_error(); if (!a) return nullptr;
+
+    PyObject* spec_dict = nullptr;
+    if (!PyArg_ParseTuple(args, "O:settings_open", &spec_dict)) return nullptr;
+    if (!PyDict_Check(spec_dict)) {
+        PyErr_SetString(PyExc_TypeError,
+                        "clippy.settings_open(): expected a dict");
+        return nullptr;
+    }
+
+    auto cb = std::make_shared<SettingsCallbacks>();
+    if (!settingsCallable(spec_dict, "on_change", &cb->on_change) ||
+        !settingsCallable(spec_dict, "on_apply",  &cb->on_apply)  ||
+        !settingsCallable(spec_dict, "on_cancel", &cb->on_cancel) ||
+        !settingsCallable(spec_dict, "on_close",  &cb->on_close))
+        return nullptr;
+
+    Settings::Spec spec;
+    spec.title = settingsStr(spec_dict, "title", "gobboclippy settings");
+
+    PyObject* fields = PyDict_GetItemString(spec_dict, "fields");   // borrowed
+    if (!fields || !PySequence_Check(fields)) {
+        PyErr_SetString(PyExc_ValueError,
+                        "clippy.settings_open(): expected a 'fields' sequence");
+        return nullptr;
+    }
+    const Py_ssize_t n = PySequence_Size(fields);
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        PyObject* item = PySequence_GetItem(fields, i);             // new
+        if (!item) return nullptr;
+        Settings::Field f;
+        const bool ok = settingsField(item, f);
+        Py_DECREF(item);
+        if (!ok) return nullptr;
+        spec.fields.push_back(std::move(f));
+    }
+
+    spec.on_change = [cb](const Settings::Field& f) {
+        if (!cb->on_change) return;
+        PyGILState_STATE gil = PyGILState_Ensure();
+        PyObject* v = settingsValue(f);
+        if (!v) {
+            PyErr_Print();
+        } else {
+            PyObject* r = PyObject_CallFunction(cb->on_change, "sO",
+                                                f.key.c_str(), v);
+            Py_DECREF(v);
+            if (!r) PyErr_Print(); else Py_DECREF(r);
+        }
+        PyGILState_Release(gil);
+    };
+
+    // The one callback with an answer. An empty string means the config was
+    // written; anything else is shown in the dialog and the dialog stays open.
+    // A raising handler is the same answer with the exception for its text --
+    // a failed write must never look like a successful one.
+    spec.on_apply = [cb](const std::vector<Settings::Field>& edited) -> std::string {
+        if (!cb->on_apply) return std::string();
+
+        PyGILState_STATE gil = PyGILState_Ensure();
+        std::string problem;
+
+        PyObject* values = PyDict_New();
+        if (values) {
+            for (const Settings::Field& f : edited) {
+                PyObject* v = settingsValue(f);
+                if (!v || PyDict_SetItemString(values, f.key.c_str(), v) < 0) {
+                    Py_XDECREF(v);
+                    Py_CLEAR(values);
+                    break;
+                }
+                Py_DECREF(v);
+            }
+        }
+
+        if (!values) {
+            problem = "could not build the settings payload";
+            PyErr_Clear();
+        } else {
+            PyObject* r = PyObject_CallFunctionObjArgs(cb->on_apply, values, nullptr);
+            Py_DECREF(values);
+            if (!r) {
+                PyObject *type = nullptr, *value = nullptr, *tb = nullptr;
+                PyErr_Fetch(&type, &value, &tb);
+                PyErr_NormalizeException(&type, &value, &tb);
+                PyObject* text = value ? PyObject_Str(value) : nullptr;
+                const char* utf8 = text ? PyUnicode_AsUTF8(text) : nullptr;
+                problem = utf8 && *utf8 ? utf8 : "the settings handler raised";
+                Py_XDECREF(text);
+                // Restored and printed as well as reported: the dialog gets one
+                // line, and whoever is reading stderr gets the traceback.
+                PyErr_Restore(type, value, tb);
+                PyErr_Print();
+            } else {
+                if (PyUnicode_Check(r)) {
+                    const char* utf8 = PyUnicode_AsUTF8(r);
+                    if (utf8) problem = utf8; else PyErr_Clear();
+                }
+                Py_DECREF(r);
+            }
+        }
+
+        PyGILState_Release(gil);
+        return problem;
+    };
+
+    spec.on_cancel = [cb]() {
+        if (!cb->on_cancel) return;
+        PyGILState_STATE gil = PyGILState_Ensure();
+        PyObject* r = PyObject_CallNoArgs(cb->on_cancel);
+        if (!r) PyErr_Print(); else Py_DECREF(r);
+        PyGILState_Release(gil);
+    };
+
+    // The preview ends with the window, whatever else on_close does, and it
+    // ends here rather than in the script so that a handler that raises cannot
+    // leave the pet on screen with no banner to explain it.
+    App* app = a;
+    spec.on_close = [cb, app]() {
+        app->endPreview();
+        if (!cb->on_close) return;
+        PyGILState_STATE gil = PyGILState_Ensure();
+        PyObject* r = PyObject_CallNoArgs(cb->on_close);
+        if (!r) PyErr_Print(); else Py_DECREF(r);
+        PyGILState_Release(gil);
+    };
+
+    std::string err;
+    if (!Settings::show(spec, err)) {
+        PyErr_SetString(PyExc_RuntimeError, err.c_str());
+        return nullptr;
+    }
+    Py_RETURN_NONE;
+}
+
+PyObject* c_previewing(PyObject*, PyObject*)
+{
+    App* a = app_or_error(); if (!a) return nullptr;
+    return PyBool_FromLong(a->previewing() ? 1 : 0);
+}
+
+PyObject* c_settings_close(PyObject*, PyObject*)
+{
+    Settings::close();
+    Py_RETURN_NONE;
+}
+
+PyObject* c_settings_open_p(PyObject*, PyObject*)
+{
+    return PyBool_FromLong(Settings::open() ? 1 : 0);
+}
+
+PyObject* c_preview(PyObject*, PyObject*)
+{
+    App* a = app_or_error(); if (!a) return nullptr;
+
+    // Refused rather than ignored outside a settings session: the banner is the
+    // only thing that explains why the pet is on screen while hidden, and the
+    // dialog closing is the only thing that ends it. Without one there would be
+    // no way back.
+    if (!Settings::open()) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "clippy.preview(): only meaningful while the settings "
+                        "window is open, because closing it is what ends the "
+                        "preview");
+        return nullptr;
+    }
+    a->engagePreview();
+    Py_RETURN_NONE;
 }
 
 // --- clippy.mic -------------------------------------------------------------
@@ -298,7 +651,7 @@ PyObject* c_mic_start(PyObject*, PyObject* args)
     // rather than in the script because a user relies on it to know when the
     // microphone is live, and a script is not the right place to keep a promise
     // made to somebody else.
-    if (!a->window.visible()) {
+    if (!a->visible()) {
         PyErr_SetString(PyExc_RuntimeError,
                         "clippy.mic.start(): the window is hidden, and a hidden "
                         "pet cannot show that it is recording");
@@ -427,6 +780,27 @@ PyMethodDef kMethods[] = {
      "A double-click also fires 'click' twice, with clicks 1 then 2, as every "
      "toolkit does it: use one hook or the other, not both."},
     {"log",          c_log,          METH_VARARGS, "log(msg) -> write to the SDL log."},
+    {"settings_open", c_settings_open, METH_VARARGS,
+     "settings_open(spec) -> open the settings window on a field schema.\n"
+     "spec is a dict: title, fields (a list of field dicts), and the\n"
+     "callbacks on_change(key, value), on_apply(values) -> None | error\n"
+     "string, on_cancel() and on_close(). A field dict is key, label, tab,\n"
+     "help, type ('int', 'text', 'bool' or 'choice'), value, live, and\n"
+     "min/max or choices for the types that take them."},
+    {"previewing",   c_previewing,   METH_NOARGS,
+     "True while the pet is on screen only to demonstrate a setting.\n"
+     "visible() is False at the same time, and both are true answers: the\n"
+     "window is mapped, and the user has not asked to see it. A script that\n"
+     "draws anything meaning 'I am up' wants this one."},
+    {"settings_close", c_settings_close, METH_NOARGS,
+     "Close the settings window, as Cancel would but without on_cancel."},
+    {"settings_is_open", c_settings_open_p, METH_NOARGS,
+     "True while the settings window is up."},
+    {"preview",      c_preview,      METH_NOARGS,
+     "Put the pet on screen to demonstrate a setting, without it counting as\n"
+     "shown: clippy.visible() stays False, the microphone stays refused, and\n"
+     "the window goes when the settings dialog does. Only valid while that\n"
+     "dialog is open."},
     {"pref_path",    c_pref_path,    METH_NOARGS,
      "pref_path() -> the per-user directory for this application's own files,\n"
      "created if absent. Where a script keeps its config."},
@@ -572,6 +946,20 @@ bool fireClick(const char* event, float x, float y, int button, int clicks)
                                            button, clicks));
     PyGILState_Release(g);
     return ok;
+}
+
+// Unlike every other hook, this one distinguishes "there is no handler" from
+// "the handler ran", because those call for different answers: a script with no
+// settings has nothing to open, and the tray should say so rather than appear
+// broken. A handler that raises has already been reported by finish(), and
+// counts as having run -- the script's bug is not the menu's problem.
+bool fireConfigure()
+{
+    PyGILState_STATE g = PyGILState_Ensure();
+    PyObject* fn = hook("configure");
+    if (fn) finish(PyObject_CallNoArgs(fn));
+    PyGILState_Release(g);
+    return fn != nullptr;
 }
 
 bool fireMic(bool active)

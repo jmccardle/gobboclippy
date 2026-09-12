@@ -144,20 +144,37 @@ in the host.
 
 ## Configuration
 
-- [ ] **A settings window.** There is no way around one. Today the microphone,
-      the transcriber command, the agent command and the model are hand-edited
-      JSON under `clippy.pref_path()`, and pets are installed from a script.
-      What it has to drive: the transcriber and agent commands, the voice,
-      choosing a pet from the petdex catalogue and installing it, choosing the
-      startup script, and the input bindings from **Hearing** once they exist.
+The window exists. It is a second SDL window drawn with Dear ImGui, opened from
+the tray's **Configure...**, and it renders a schema it does not understand —
+the host knows what an int field is and what OK/Cancel/Apply mean, and
+`scripts/gobbo/settings.py` knows what any of it means. Adding a setting is a
+dict in that file. See `README.md` "Settings".
 
-      The open question is what it is *made of*. The host draws to one
-      transparent, borderless, always-on-top window with no hit testing and no
-      widgets, so the pet's own machinery is the wrong tool. A second native
-      window is the assumption `docs/harvest.md` says to revisit first. The
-      honest options are a separate process with a real toolkit, or a local
-      page in the user's browser — and that is a decision, not an
-      implementation detail.
+The question of what it is made of is answered and the reasoning is in
+`CMakeLists.txt` beside the dependency: tkinter would mean shipping Tcl/Tk on
+three platforms, the harvested drawing layer has none of the five things a
+dialog is mostly made of, and a desktop pet should not open a browser tab to
+move itself.
+
+What is left is the rest of the settings. Each is a `Section` subclass, and
+none of them needs C++.
+
+- [ ] **The transcriber and agent commands.** The two that currently have no
+      default and raise with the JSON to write — see `gobbo/config.py`. A text
+      field is not enough on its own: the useful version validates that the
+      command exists before saving, because the failure otherwise arrives at the
+      first double-click rather than at the dialog.
+- [ ] **Choosing a pet.** The petdex catalogue, installed from the window rather
+      than from `scripts/pet_demo.py`. Needs the network, and therefore needs a
+      progress state and somewhere for the failure to appear.
+- [ ] **The startup script.** Which of `scripts/` runs, which today is
+      `--script` on a command line the user of a packaged build does not have.
+- [ ] **The voice**, once **Speaking** exists, and **the input bindings**, once
+      **Hearing** does.
+- [ ] **`--size` against a saved size.** The flag loses to the config file, and
+      also lost to the script's own hardcoded size before any of this — neither
+      the host nor the script can currently tell whether it was passed. Small,
+      pre-existing, and worth fixing when a second flag wants the same answer.
 
 ---
 
@@ -233,9 +250,11 @@ Decisions, not a backlog. `README.md` "Deliberately not implemented" and
   `scripts/clippy.py` and `scripts/assistant.py` draw their text twice, offset,
   as a drop shadow. A real bubble wants a nine-slice `Frame` — `UIFrame` is the
   next thing to harvest if it is wanted.
-- **A second window.** Nothing assumes exactly one and nothing should start to.
-  `Stage` is a singleton because there is one. **Configuration** is the first
-  thing with a real reason to revisit this.
+- **A second window drawn by the harvested layer.** Uncut in one direction
+  only: the settings dialog is a second window, and Dear ImGui draws it,
+  because a dialog is mostly the five things the harvest left out. `Stage` is
+  still a singleton and still because there is one stage. A *pet* drawn into
+  two windows remains cut.
 
 ---
 

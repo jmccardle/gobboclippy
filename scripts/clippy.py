@@ -33,6 +33,8 @@ import random
 
 import clippy
 
+from gobbo import settings
+
 # --- geometry ---------------------------------------------------------------
 #
 # All of these are pixel offsets inside assets/clip_body.png's 256x256 frame,
@@ -372,6 +374,10 @@ def place_bottom_right(margin=40):
     Uses the work area the host reports, which excludes panels and docks, so
     this lands on the desktop rather than under a taskbar. Position is a no-op
     on Wayland regardless.
+
+    This is where the pet goes when nobody has said otherwise. Somebody who has
+    -- through the tray's "Configure..." window -- gets what they said instead;
+    see :func:`gobbo.settings.apply_saved_geometry`.
     """
     x, y, dw, dh = clippy.display_bounds()
     w, h = clippy.size()
@@ -385,8 +391,11 @@ def main():
     for note in caps["notes"]:
         clippy.log(f"note: {note}")
 
-    # Sized for the character plus a line or three of caption underneath.
+    # Sized for the character plus a line or three of caption underneath,
+    # unless the config file has an opinion -- which it does once anyone has
+    # touched the Window tab of the settings dialog.
     clippy.set_size(*WINDOW)
+    saved_geometry = settings.apply_saved_geometry()
 
     font = clippy.Font("JetBrainsMono.ttf")
 
@@ -407,10 +416,11 @@ def main():
     )
     clippy.stage.append(badge)
 
-    if caps["always_on_top"]:
+    if caps["always_on_top"] and not saved_geometry:
         place_bottom_right()
 
     clippy.on("frame", _tick)
+    clippy.on("configure", settings.open)
     clippy.on("show", lambda: clippy.log("shown"))
     clippy.on("hide", lambda: clippy.log("hidden"))
     clippy.on("quit", lambda: clippy.log("goodbye"))

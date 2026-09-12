@@ -173,9 +173,14 @@ And two more, decided during the port:
   `UIFrame` — the next thing to harvest if it is wanted.
 - **input.** `UIDrawable`'s `click_at` / hover dispatch was cut with the rest.
   The window is not click-through and has no hit testing; see the README.
-- **a second window.** Nothing assumes exactly one, and nothing should start
-  to. `Stage` is a singleton because there is one; if a bubble becomes its own
-  borderless window, that is the assumption to revisit first.
+- **a second window on the harvested layer.** There is a second window now --
+  the settings dialog -- and it is drawn by Dear ImGui rather than by any of
+  this, precisely because a settings dialog is mostly the five things the
+  harvest deliberately left out: hit testing, focus, a text caret, clipboard
+  and scrolling. `Stage` is still a singleton, and still because there is one
+  stage. What has not been revisited is a *pet* window drawn twice; if a speech
+  bubble becomes its own borderless window, that is still the assumption to
+  revisit first.
 
 ## What this base must keep true
 
@@ -191,7 +196,10 @@ For the rest to stay cheap:
    window.** `SDL_SetWindowSize` is a request, not a change — a hidden X11
    window keeps its old size until it is mapped. `PetWindow::setSize` syncs,
    and `SDL_EVENT_WINDOW_RESIZED` is handled, so nothing aligns against a size
-   the window does not have.
+   the window does not have. `setPosition` and `show` sync for the same reason:
+   the window manager places a window as it maps it, and without the sync a
+   move made between the request and the map is overwritten late and silently
+   while `SDL_GetWindowPosition` reports the value that was asked for.
 
 ## Also worth stealing
 

@@ -19,6 +19,7 @@
 #include "Drawable.h"
 #include "Mic.h"
 #include "PyClippy.h"
+#include "Settings.h"
 
 namespace {
 
@@ -634,6 +635,23 @@ int main(int argc, char** argv)
     app.tray.on_hide = [&app] { app.setVisible(false); };
     app.tray.on_exit = [&app] { app.running = false; };
 
+    // "Configure..." is a question for the script, not an action of the host's:
+    // the host has no idea what this pet's settings are. A script with no
+    // 'configure' hook gets a menu entry that says so once rather than one that
+    // silently does nothing.
+    app.tray.on_configure = [&app] {
+        if (Settings::open()) return;          // already up; not stacked
+        if (!PyClippy::fireConfigure()) {
+            SDL_Log("[tray] Configure...: this script registered no "
+                    "clippy.on('configure') handler, so there is nothing to "
+                    "configure. scripts/clippy.py and scripts/assistant.py "
+                    "both do.");
+        }
+    };
+
+    // The banner's Show button: the preview becomes what it looks like.
+    Settings::setOnPreviewShow([&app] { app.setVisible(true); });
+
     std::string tray_err;
     if (!app.tray.create(AppPaths::asset("clippy.png"), "gobboclippy", tray_err)) {
         std::fprintf(stderr,
@@ -719,6 +737,11 @@ int main(int argc, char** argv)
     while (app.running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            // Offered to the dialog first, and swallowed if it was the
+            // dialog's: a click that landed on a settings window must not also
+            // reach the pet as "the pet was clicked".
+            if (Settings::handleEvent(e)) continue;
+
             switch (e.type) {
             case SDL_EVENT_QUIT:
                 app.running = false;
@@ -763,8 +786,14 @@ int main(int argc, char** argv)
         PyClippy::fireFrame(dt);
 
         if (app.window.visible()) app.window.render();
+        Settings::render();
         SDL_Delay(16);   // ~60fps ceiling; the pet is idle most of the time
     }
+
+    // Before the quit hook and well before Py_FinalizeEx: the spec holds
+    // references to four Python callables, and releasing one after the
+    // interpreter has gone is a use-after-free.
+    Settings::close();
 
     PyClippy::fire("quit");
 

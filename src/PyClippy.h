@@ -47,6 +47,11 @@ bool fireFrame(float dt);
 // timer of ours.
 bool fireClick(const char* event, float x, float y, int button, int clicks);
 
+// The tray's "Configure..." entry. Returns whether a handler was registered at
+// all -- not whether it succeeded -- because a script with no settings is a
+// menu entry that should explain itself rather than do nothing.
+bool fireConfigure();
+
 // The microphone started or stopped -- including when it stopped because the
 // window hid, which is the case the indicator exists for.
 bool fireMic(bool active);

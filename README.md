@@ -304,6 +304,87 @@ See [docs/petdex.md](docs/petdex.md) for the format in full.
 Reading WebP is why libwebp is linked — 97% of the corpus is WebP and stb_image
 decodes none of it. `--capabilities` reports which decoders a build has.
 
+### Settings
+
+The tray's **Configure...** asks the script, rather than doing anything itself:
+it fires the `configure` hook, and a script with no handler gets a line in the
+log saying so rather than a menu entry that silently does nothing. Both shipped
+scripts register one.
+
+The host draws the window and owns OK / Cancel / Apply. It does not know what
+any setting *is* — it renders a list of field dicts and hands the edited values
+back, so adding a setting is a dict in `scripts/gobbo/settings.py` and no change
+to the C++ at all.
+
+```python
+clippy.settings_open({
+    "title": "gobboclippy settings",
+    "fields": [
+        {"key": "window.x", "label": "Position X", "tab": "Window",
+         "type": "int", "value": 1612, "min": -32768, "max": 32768,
+         "live": True, "help": "Pixels from the left edge."},
+    ],
+    "on_change": lambda key, value: ...,   # a live field was edited
+    "on_apply": lambda values: None,       # None, or a message to show
+    "on_cancel": lambda: ...,              # put back what on_change did
+})
+```
+
+`type` is `int`, `text`, `bool` or `choice`; a choice carries `choices` and
+crosses the boundary as the chosen string, never as an index, so reordering the
+list cannot silently change what a config file means. An unknown type is refused
+at the door rather than drawn as something else.
+
+`on_apply` returns `None` on success, or a string to show in the dialog without
+closing it; a handler that raises is the same answer with the exception for its
+text, and the traceback goes to stderr. A failed write must never look like a
+successful one. It is called only when something actually changed, so **OK** and
+**Apply** write nothing when nothing was edited, and **Apply** is disabled until
+there is something to apply.
+
+`scripts/gobbo/settings.py` is the policy half. It re-reads the config file
+every time the window opens — the dialog is a view of what is on disk, not of
+what this process last remembered — and on apply it re-reads again, replaces
+only the keys its sections own, and writes through a temporary file in the same
+directory. A transcriber command this dialog has never heard of survives it.
+
+A **section** is the unit of extension: a class that says which fields it
+contributes, what a live edit does right now, and how to fold the values back
+into the config. `WindowSection` is the first one, and writes:
+
+```json
+{ "window": { "x": 1612, "y": 580, "width": 300, "height": 380 } }
+```
+
+Both shipped scripts apply that at startup and fall back to their own placement
+when the file says nothing — a default for somebody who has never expressed a
+preference, which is not the same as a fallback around an error. A config file
+that exists and does not parse still raises.
+
+#### The geometry preview
+
+A window position you cannot see is a number you are guessing at, so editing one
+puts the pet on screen. That is not the same as showing it, and the difference
+is a third state:
+
+| | pet window | `visible()` | `previewing()` |
+|---|---|---|---|
+| hidden | unmapped | `False` | `False` |
+| geometry edited while hidden | mapped | `False` | `True` |
+| **Show** pressed | mapped | `True` | `False` |
+| **Hide** during the session | mapped | `False` | `True` |
+| dialog closed | follows `visible()` | | `False` |
+
+While previewing, the dialog carries a banner above the buttons saying the pet
+will go back to hidden when the dialog closes, with a **Show** button that makes
+it mean what it looks like it means. The tray's Hide becomes **Hide (preview is
+on)**, because during a settings session with geometry in play it demotes the
+window to a preview rather than taking it off the screen.
+
+This is deliberately independent of OK / Cancel. Cancel puts the *geometry*
+back; it does not un-show a pet the user pressed Show on. Repositioning a hidden
+pet, showing it, and then cancelling leaves it shown, where it was before.
+
 ### The control channel
 
 A script can let other processes drive the pet. One JSON object per line over a
@@ -433,7 +514,11 @@ clippy.show()
 | `display_bounds()` | `(x, y, w, h)` work area of the display the pet is on |
 | `set_sprite(path)` | load one PNG, contained and centred; `OSError` if it cannot |
 | `capabilities()` | the dict behind `--capabilities` |
-| `on(event, fn)` | `show`, `hide`, `quit`, `frame`, `click`, `double_click`, `mic` |
+| `on(event, fn)` | `show`, `hide`, `quit`, `frame`, `click`, `double_click`, `mic`, `configure` |
+| `previewing()` | `bool`; on screen only to demonstrate a setting |
+| `settings_open(spec)` | open the settings window on a field schema |
+| `settings_is_open()` / `settings_close()` | is it up; close it |
+| `preview()` | put the pet on screen to demonstrate a setting |
 | `pref_path()` | per-user directory for this application's own files, created |
 | `quit()` | shut down |
 | `log(msg)` | write to the SDL log |
@@ -445,6 +530,7 @@ clippy.show()
 | `click` | `(x, y, button, clicks)` |
 | `double_click` | `(x, y, button)` |
 | `mic` | `True` when recording started, `False` when it stopped |
+| `configure` | none; the tray's "Configure..." was chosen |
 
 The window swallows clicks over its whole area, transparent corners included,
 so a click event is "the pet was clicked" and needs no hit test. SDL counts the
@@ -460,6 +546,15 @@ assembling a path out of `$HOME`, which is what keeps the tree forkable.
 Visibility changes route through one path (`App::setVisible`) whatever
 triggers them — tray, script, or window manager — so hooks fire on the
 transition only, and a hook that calls `show()` cannot recurse.
+
+`visible()` and `previewing()` are two different questions, and both have true
+answers at once. A settings window demonstrating where the pet will sit needs it
+on screen; the user has not asked to see it. So the window is mapped,
+`visible()` is `False`, the `show` hook has not fired, and `mic.start()` still
+refuses — because the visible pet is the recording indicator, and a pet the user
+believes is hidden must not be recording. `preview()` is how a settings handler
+asks for that state, and it is refused outside a settings session: closing the
+dialog is the only thing that ends one.
 
 `on()` rejects an unknown event name rather than registering a hook that would
 never fire. The `frame` hook is called with the seconds since the last frame —
@@ -679,7 +774,8 @@ beside it and in the package's `licenses/`.
 |---|---|
 | `src/main.cpp` | CLI, init order, event loop, and the interpreter mode |
 | `src/PetWindow.*` | SDL3 window flags, render, the one-image shortcut |
-| `src/Tray.*` | `SDL_Tray` menu: Show / Hide / Exit |
+| `src/Tray.*` | `SDL_Tray` menu: Show / Hide / Configure... / Exit |
+| `src/Settings.*` | the settings window: Dear ImGui over a schema it does not understand |
 | `src/Capabilities.*` | what the platform granted, and why not |
 | `src/AppPaths.*` | exe-relative path resolution |
 | `src/Mic.*` | the recording device: one `SDL_AudioStream`, fixed at 16 kHz mono |

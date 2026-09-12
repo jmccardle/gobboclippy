@@ -21,7 +21,7 @@ set(GC_BUNDLE_ID "com.goblincorps.gobboclippy" CACHE STRING
 # ---------------------------------------------------------------------------
 # Dependencies
 #
-# Both are fetched and pinned. To build against a local checkout instead:
+# All fetched and pinned. To build against a local checkout instead:
 #   cmake -DFETCHCONTENT_SOURCE_DIR_SDL3=/path/to/SDL ...
 # ---------------------------------------------------------------------------
 include(FetchContent)
@@ -97,7 +97,54 @@ FetchContent_Declare(libwebp
     GIT_PROGRESS   TRUE
 )
 
-FetchContent_MakeAvailable(SDL3 stb libwebp)
+# Dear ImGui: the settings window, and nothing else. The pet window does not
+# know it exists.
+#
+# The drawing layer harvested from McRogueFace draws a pet; it has no hit
+# testing (deliberately -- see PetWindow.h), no focus, no text caret, no
+# clipboard and no scrolling, and a settings dialog is mostly those five
+# things. The alternatives were shipping Tcl/Tk on three platforms for tkinter,
+# which the bundled stdlib deliberately excludes, or serving a page on loopback
+# and making a desktop pet open a browser tab to move itself.
+#
+# It ships no CMake build of its own -- upstream's position is that you compile
+# the sources into your target -- so the target below is ours. Two backends:
+# the platform half talks to SDL_Window and SDL_Event, the renderer half draws
+# through the same SDL_Renderer the pet uses.
+#
+# Measured, like libwebp above: the stripped Linux binary goes from 945 KB to
+# 1.83 MB. That is now the largest single thing in this binary that is not SDL,
+# and about 10% of the package. It buys a settings dialog that can be typed in.
+FetchContent_Declare(imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG        v1.92.9
+    GIT_SHALLOW    TRUE
+    GIT_PROGRESS   TRUE
+)
+
+FetchContent_MakeAvailable(SDL3 stb libwebp imgui)
+
+add_library(gc_imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp
+    ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
+)
+# imgui_demo.cpp is not in that list on purpose: it is the single largest file
+# in the library and nothing here calls ShowDemoWindow().
+target_include_directories(gc_imgui PUBLIC
+    ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+if(GC_STATIC_SDL)
+    target_link_libraries(gc_imgui PUBLIC SDL3::SDL3-static)
+else()
+    target_link_libraries(gc_imgui PUBLIC SDL3::SDL3)
+endif()
+# ImGui's IM_ASSERT is assert() from <assert.h>, so a Release build's NDEBUG
+# already removes it. Left alone deliberately: what it catches is a mismatched
+# Begin/End in our code, which is a bug in this tree and not a user's problem.
 
 # Python. Two paths: a native build finds the host interpreter, a cross-build
 # is handed a prebuilt Windows kit. Both end up providing GC_PY_TAG/GC_PY_VERSION
@@ -150,6 +197,7 @@ add_executable(gobboclippy
     src/Capabilities.cpp
     src/AppPaths.cpp
     src/Mic.cpp
+    src/Settings.cpp
 
     # The drawing layer harvested from McRogueFace. Everything above this line
     # is host; everything below it is the sprite/text/animation subset, and
@@ -181,6 +229,7 @@ else()
 endif()
 target_link_libraries(gobboclippy PRIVATE ${GC_PYTHON_TARGET})
 target_link_libraries(gobboclippy PRIVATE webpdecoder)
+target_link_libraries(gobboclippy PRIVATE gc_imgui)
 
 # The wheel's file name is a build-time fact the binary states rather than
 # globs for, in the same way it states the stdlib zip's name.

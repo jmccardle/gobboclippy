@@ -376,6 +376,7 @@ set(GC_NOTICES
     # of the terms.
     "${libwebp_SOURCE_DIR}/COPYING"  "libwebp-BSD-3-Clause.txt"
     "${libwebp_SOURCE_DIR}/PATENTS"  "libwebp-PATENTS.txt"
+    "${imgui_SOURCE_DIR}/LICENSE.txt" "dear-imgui-MIT.txt"
 )
 
 list(LENGTH GC_NOTICES _n)
@@ -404,7 +405,7 @@ set(GC_LICENSE_INDEX "${CMAKE_BINARY_DIR}/licenses-README.txt")
 file(WRITE "${GC_LICENSE_INDEX}"
 "gobboclippy ${PROJECT_VERSION} -- ${GC_PLATFORM}
 
-This package is MIT licensed and redistributes six other works. Their
+This package is MIT licensed and redistributes seven other works. Their
 notices are here in full.
 
   gobboclippy-MIT.txt             gobboclippy itself. MIT.
@@ -425,6 +426,8 @@ notices are here in full.
   libwebp-BSD-3-Clause.txt        libwebp, the WebP decoder linked into the
                                   binary. BSD-3-Clause, and its separate
                                   patent grant is libwebp-PATENTS.txt.
+  dear-imgui-MIT.txt              Dear ImGui, which draws the settings
+                                  window, linked into the binary. MIT.
 ")
 if(WIN32)
     file(APPEND "${GC_LICENSE_INDEX}"

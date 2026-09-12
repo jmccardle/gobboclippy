@@ -23,7 +23,7 @@ import textwrap
 
 import clippy
 
-from gobbo import accumulate, asr, config, tau
+from gobbo import accumulate, asr, config, settings, tau
 
 WINDOW = (360, 420)
 
@@ -292,6 +292,7 @@ def main():
         clippy.log(f"note: {note}")
 
     clippy.set_size(*WINDOW)
+    saved_geometry = settings.apply_saved_geometry()
     font = clippy.Font("JetBrainsMono.ttf")
 
     me = Assistant(font)
@@ -300,8 +301,9 @@ def main():
     clippy.on("double_click", me.toggle_mic)
     clippy.on("mic", me.on_mic)
     clippy.on("quit", me.shutdown)
+    clippy.on("configure", settings.open)
 
-    if caps["always_on_top"]:
+    if caps["always_on_top"] and not saved_geometry:
         place_bottom_right()
     clippy.show()
 

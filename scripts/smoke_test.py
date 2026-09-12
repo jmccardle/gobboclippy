@@ -76,6 +76,96 @@ check("visible after toggle()", clippy.visible(), True)
 
 check("hook sequence", seen, ["show", "hide", "show"])
 
+# --- the settings window ----------------------------------------------------
+# The host's half only: a schema goes in, widgets come out, and the preview is a
+# third visibility state. What the fields *mean* is scripts/gobbo/settings.py's
+# and is not exercised here, deliberately -- driving the real one would write the
+# config file of whoever ran the test.
+#
+# Nothing below clicks OK, because nothing here can: the buttons are drawn by the
+# event loop, and none of this has reached it yet.
+
+check("nothing is previewing yet", clippy.previewing(), False)
+check("no settings window yet", clippy.settings_is_open(), False)
+
+# preview() outside a settings session is refused rather than ignored: closing
+# the dialog is the only thing that ends a preview, so without one there would be
+# no way back to hidden.
+try:
+    clippy.preview()
+except RuntimeError as exc:
+    clippy.log(f"PASS  preview() refuses with no dialog ({str(exc)[:44]}...)")
+else:
+    FAILURES.append("preview() engaged with no settings window open")
+
+# A schema the host cannot render is refused at the door. Each of these would
+# otherwise be a field silently drawn as something it is not, which is a setting
+# that writes back the wrong shape without ever saying so.
+for label, spec in (
+    ("a spec that is not a dict", ["not", "a", "dict"]),
+    ("a field with no key", {"fields": [{"label": "nameless"}]}),
+    ("a field of unknown type", {"fields": [{"key": "k", "type": "colour"}]}),
+    ("a choice with no choices", {"fields": [{"key": "k", "type": "choice"}]}),
+    ("a spec with no fields", {"title": "empty"}),
+):
+    try:
+        clippy.settings_open(spec)
+    except (TypeError, ValueError) as exc:
+        clippy.log(f"PASS  settings_open() refuses {label}")
+    else:
+        FAILURES.append(f"settings_open() accepted {label}")
+        clippy.settings_close()
+
+closed = []
+clippy.settings_open({
+    "title": "smoke test",
+    "fields": [
+        {"key": "window.x", "label": "X", "tab": "Window",
+         "type": "int", "value": 100, "min": 0, "max": 4096, "live": True},
+        {"key": "demo.name", "label": "Name", "type": "text", "value": "clippy"},
+        {"key": "demo.loud", "label": "Loud", "type": "bool", "value": True},
+        {"key": "demo.voice", "label": "Voice", "type": "choice",
+         "choices": ["amy", "ryan"], "value": "ryan"},
+    ],
+    "on_close": lambda: closed.append(True),
+})
+check("settings window opened", clippy.settings_is_open(), True)
+
+# Two dialogs editing one file is a conflict with no good answer, so the second
+# is refused rather than stacked.
+try:
+    clippy.settings_open({"fields": []})
+except RuntimeError:
+    clippy.log("PASS  a second settings window is refused")
+else:
+    FAILURES.append("settings_open() stacked a second window")
+
+clippy.hide()
+check("hidden with the dialog up", clippy.visible(), False)
+
+clippy.preview()
+check("previewing after preview()", clippy.previewing(), True)
+check("a preview is not visible()", clippy.visible(), False)
+
+# The invariant the tri-state exists to protect. The window is on screen, and the
+# user believes it is hidden, so the recording indicator promise is unchanged:
+# a preview must not be able to record.
+try:
+    clippy.mic.start()
+except RuntimeError as exc:
+    clippy.log(f"PASS  mic.start() refuses during a preview ({str(exc)[:36]}...)")
+else:
+    FAILURES.append("mic.start() recorded during a settings preview")
+    clippy.mic.stop()
+
+clippy.settings_close()
+check("on_close fired exactly once", closed, [True])
+check("preview ends with the dialog", clippy.previewing(), False)
+check("still hidden afterwards", clippy.visible(), False)
+check("settings window is gone", clippy.settings_is_open(), False)
+
+clippy.show()
+
 # --- the microphone ---------------------------------------------------------
 # No CI runner has a recording device, so everything below either holds with no
 # hardware at all or is branched on whether this machine turned out to have one.

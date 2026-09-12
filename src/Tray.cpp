@@ -38,16 +38,19 @@ bool Tray::create(const std::string& icon_png,
     m_show = SDL_InsertTrayEntryAt(menu, -1, "Show", SDL_TRAYENTRY_BUTTON);
     m_hide = SDL_InsertTrayEntryAt(menu, -1, "Hide", SDL_TRAYENTRY_BUTTON);
     SDL_InsertTrayEntryAt(menu, -1, nullptr, 0);        // separator
+    m_configure = SDL_InsertTrayEntryAt(menu, -1, "Configure...", SDL_TRAYENTRY_BUTTON);
+    SDL_InsertTrayEntryAt(menu, -1, nullptr, 0);        // separator
     m_exit = SDL_InsertTrayEntryAt(menu, -1, "Exit", SDL_TRAYENTRY_BUTTON);
 
-    if (!m_show || !m_hide || !m_exit) {
+    if (!m_show || !m_hide || !m_configure || !m_exit) {
         error_out = std::string("SDL_InsertTrayEntryAt: ") + SDL_GetError();
         return false;
     }
 
-    SDL_SetTrayEntryCallback(m_show, &Tray::dispatch, this);
-    SDL_SetTrayEntryCallback(m_hide, &Tray::dispatch, this);
-    SDL_SetTrayEntryCallback(m_exit, &Tray::dispatch, this);
+    SDL_SetTrayEntryCallback(m_show,      &Tray::dispatch, this);
+    SDL_SetTrayEntryCallback(m_hide,      &Tray::dispatch, this);
+    SDL_SetTrayEntryCallback(m_configure, &Tray::dispatch, this);
+    SDL_SetTrayEntryCallback(m_exit,      &Tray::dispatch, this);
     return true;
 }
 
@@ -58,15 +61,25 @@ void Tray::dispatch(void* userdata, SDL_TrayEntry* entry)
 
     if (entry == self->m_show && self->on_show) self->on_show();
     else if (entry == self->m_hide && self->on_hide) self->on_hide();
+    else if (entry == self->m_configure && self->on_configure) self->on_configure();
     else if (entry == self->m_exit && self->on_exit) self->on_exit();
 }
 
-void Tray::setVisibleState(bool window_visible)
+void Tray::setVisibleState(bool logically_visible, bool preview_mode)
 {
     // Grey out the action that would be a no-op, so the menu always reflects
     // the real window state.
-    if (m_show) SDL_SetTrayEntryEnabled(m_show, !window_visible);
-    if (m_hide) SDL_SetTrayEntryEnabled(m_hide, window_visible);
+    if (m_show) SDL_SetTrayEntryEnabled(m_show, !logically_visible);
+    if (m_hide) SDL_SetTrayEntryEnabled(m_hide, logically_visible);
+
+    // In a settings session with the geometry in play, Hide stops meaning "the
+    // pet leaves the screen" -- it goes back to being a positioning preview
+    // until the dialog closes. Saying so is cheaper than the user clicking it
+    // twice and concluding the tray is broken.
+    if (m_hide && preview_mode != m_preview_label) {
+        SDL_SetTrayEntryLabel(m_hide, preview_mode ? "Hide (preview is on)" : "Hide");
+        m_preview_label = preview_mode;
+    }
 }
 
 void Tray::destroy()
@@ -74,5 +87,6 @@ void Tray::destroy()
     if (m_tray) { SDL_DestroyTray(m_tray); m_tray = nullptr; }
     if (m_icon) { SDL_DestroySurface(m_icon); m_icon = nullptr; }
     if (m_pixels) { stbi_image_free(m_pixels); m_pixels = nullptr; }
-    m_show = m_hide = m_exit = nullptr;
+    m_show = m_hide = m_configure = m_exit = nullptr;
+    m_preview_label = false;
 }

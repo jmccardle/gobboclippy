@@ -149,6 +149,14 @@ void PetWindow::show()
     if (!m_window) return;
     render();                 // draw before mapping, so no blank frame flashes
     SDL_ShowWindow(m_window);
+
+    // Mapping is a request too, and on X11 the window manager places the window
+    // as it maps it. Anything that moves the window between the request and the
+    // map -- which is exactly what the settings window's geometry preview does,
+    // since showing the pet is the first half of demonstrating where it goes --
+    // is overwritten by that placement, arriving late and silently.
+    SDL_SyncWindow(m_window);
+
     // Re-assert stacking: some window managers drop the above-state when a
     // window is unmapped and remapped.
     SDL_SetWindowAlwaysOnTop(m_window, true);
@@ -166,7 +174,17 @@ void PetWindow::toggle() { m_visible ? hide() : show(); }
 
 void PetWindow::setPosition(int x, int y)
 {
-    if (m_window) SDL_SetWindowPosition(m_window, x, y);
+    if (!m_window) return;
+    SDL_SetWindowPosition(m_window, x, y);
+
+    // The same request-not-a-change that setSize() documents, and for the same
+    // reason: without the sync, SDL_GetWindowPosition answers with what was
+    // asked for rather than with what the window manager did, and a position
+    // that reads back correct while the window never moved is the one failure
+    // this project refuses to ship (see Capabilities.cpp on Wayland's
+    // always-on-top). A window manager that declines is then visible as a
+    // position that does not match.
+    SDL_SyncWindow(m_window);
 }
 
 void PetWindow::getPosition(int& x, int& y) const
