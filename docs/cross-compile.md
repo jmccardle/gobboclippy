@@ -29,7 +29,7 @@ cmake --build build-windows -j$(nproc)
 cmake --build build-windows --target package
 ```
 
-Produces `gobboclippy-<version>-Windows.zip`, about 14 MB.
+Produces `gobboclippy-<version>-Windows.zip`, about 17 MB.
 
 Three things that bit during setup and are now handled.
 
@@ -99,7 +99,7 @@ is a substitute for the rules above.
 ### The Windows CPython kit
 
 `find_package(Python3)` cannot help when cross-compiling — it finds the build
-machine's Linux interpreter and hands back a `libpython3.11.so` that cannot be
+machine's Linux interpreter and hands back a `libpython3.X.so` that cannot be
 linked into a PE binary. So the runtime is supplied explicitly via
 `-DGC_WINPY_ROOT`. Expected layout:
 

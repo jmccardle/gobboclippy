@@ -4,7 +4,8 @@
 # the build machine's Linux interpreter and hand back a libpython3.11.so that
 # cannot be linked into a PE binary. So the kit is supplied explicitly.
 #
-# Expected layout of GC_WINPY_ROOT (see tools/make_windows_kit.py):
+# Expected layout of GC_WINPY_ROOT (see docs/cross-compile.md for how to
+# assemble one from python.org's embeddable package):
 #
 #   <kit>/
 #     include/            Python.h, pyconfig.h and the rest of Include/

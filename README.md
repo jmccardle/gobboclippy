@@ -48,7 +48,7 @@ assumed. The running binary re-checks and reports the real answer:
 
 ```
 $ ./gobboclippy --capabilities
-gobboclippy 0.4.0  (SDL 3.4.16, Python 3.11)
+gobboclippy 0.5.0  (SDL 3.4.16, Python 3.14)
   platform      : Linux
   video driver  : x11
   borderless    : yes
@@ -113,7 +113,9 @@ to harvest if it is wanted.
 ## Build
 
 Needs CMake ≥ 3.21, a C++17 compiler, and Python ≥ 3.10 with development
-headers. SDL3 and stb are fetched and pinned automatically.
+headers — 3.10 through 3.14 are supported, and a native build bundles whichever
+one it finds. Released packages ship 3.14; that version is pinned in CI, not
+here. SDL3 and stb are fetched and pinned automatically.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -145,28 +147,30 @@ cmake --build build --target package
 Produces a relocatable directory and an archive:
 
 ```
-gobboclippy-0.4.0-Linux/
+gobboclippy-0.5.0-Linux/
   gobboclippy            1.6 MB
   python3 -> gobboclippy          the same binary, dispatched on argv[0]
-  libSDL3.so.0           3.6 MB
+  libSDL3.so.0           3.4 MB
   assets/                SVG sources + rendered PNGs + JetBrains Mono
   scripts/               clippy.py, assistant.py, pet_demo.py, pet_ctl.py, gobbo/
   licenses/              notices for everything redistributed here
   lib/
-    libpython3.11.so.1.0 7.4 MB   the SONAME, not the linker name
-    python311.zip        2.4 MB   stdlib, test suites excluded
-    python3.11/lib-dynload/        stdlib C extensions
-    pip-23.0.1-py3-none-any.whl    pip, importable straight from the wheel
+    libpython3.14.so.1.0 5.8 MB   the SONAME, not the linker name
+    python314.zip        2.7 MB   stdlib, test suites excluded
+    python3.14/lib-dynload/        stdlib C extensions
+    pip-26.2.1-py3-none-any.whl    pip, importable straight from the wheel
   site/                            sys.prefix; pip installs under here
 ```
 
-**21 MB on disk, 10 MB compressed.** The binary's RUNPATH is
+**23 MB on disk, 11 MB compressed**, measured from the release artifact rather
+than a local build — the two disagree about which pip ships, and a local
+`libpython` is whatever the build machine's distro made. The binary's RUNPATH is
 `$ORIGIN:$ORIGIN/lib`, and every runtime path is resolved from
 `SDL_GetBasePath()`, so the directory can be moved anywhere. Verified by
 running it from a different filesystem with `env -i`.
 
 Both shipped libraries are staged under their SONAME — `libSDL3.so.0`,
-`libpython3.11.so.1.0` — because that is the name the loader searches for, and
+`libpython3.14.so.1.0` — because that is the name the loader searches for, and
 a package that gets it wrong does not fail. It falls through to the host's copy
 and works on every machine that has one, which is every machine that builds or
 tests it. CI relocates the package, clears `LD_LIBRARY_PATH` and asserts that
@@ -185,7 +189,7 @@ installation.
 
 Three naming details that are easy to get wrong and fail silently:
 
-- the stdlib zip must be `python311.zip`, **no dot** — that is the only name
+- the stdlib zip must be `python314.zip`, **no dot** — that is the only name
   CPython looks for on `sys.path`
 - ship `libSDL3.so.0` (the SONAME), not `libSDL3.so.0.4.16`
 - `lib-dynload/` must be shipped separately; `.so` modules cannot be imported
@@ -516,12 +520,22 @@ What `pip install` puts in `site/` is what `--script` can import. That works
 because `sys.prefix` is `site/` and `sys.base_prefix` is the package root —
 CPython's own model of a venv — and it is done that way for a reason beyond
 tidiness. Debian's CPython patches `sysconfig` to answer
-`local/lib/python3.11/dist-packages` whenever the two prefixes agree, and
-vanilla CPython answers `lib/python3.11/site-packages`; a package built on the
+`local/lib/python3.X/dist-packages` whenever the two prefixes agree, and
+vanilla CPython answers `lib/python3.X/site-packages`; a package built on the
 Forgejo runner and one built on GitHub would otherwise install to different
-places, only one of them on `sys.path`. Both CI Linux jobs install Tau's core
-from PyPI for real and then import it from the pet, so the layout is checked
-on the build that would have got it wrong.
+places, only one of them on `sys.path`. The GitHub Linux job installs Tau's
+core from PyPI for real and then imports it from the pet, so the layout is
+checked rather than assumed.
+
+`.forgejo/workflows/build.yml` is meant to be the other half of that check —
+it builds in a Debian container against whatever `python3-dev` that image has,
+which is the patched interpreter that would have got the path wrong, and it is
+the only place the mingw cross-compile is run under wine. **It has never
+completed a run.** Every execution since the workflow was added has failed in
+under 80 seconds, which is less time than fetching SDL3 takes, so it is failing
+during setup and has never reached a compiler. Nothing in this file should be
+read as verified by it. Until that is fixed, the Debian interpreter and the
+wine test are checked by hand or not at all.
 
 The runtime ignores `PYTHONPATH`, `PYTHONHOME` and the user site, as
 `python -E -s` does. It is self-contained by construction, and the host's
@@ -891,7 +905,7 @@ still unverified.
 the packaged zip is extracted and runs the full smoke test — the drawing layer
 included — on its bundled Python: window, tray, transparency, always-on-top,
 textures, the tree, animation and text, all reporting `windows` as the video
-driver. That is the authoritative check, and v0.3.0 passed it.
+driver. That is the authoritative check, and v0.4.0 passed it.
 
 Locally the same tree cross-compiles from Debian with mingw-w64 and runs under
 wine, which is a convenience rather than proof — wine is not Windows — but it
@@ -951,7 +965,7 @@ Dear ImGui (MIT). Their notices ship in `licenses/` inside the package, with an
 index:
 
 ```
-gobboclippy-0.4.0-Linux/
+gobboclippy-0.5.0-Linux/
   licenses/
     README.txt                    what each file covers
     gobboclippy-MIT.txt
