@@ -44,9 +44,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This literal is the version every released package ships, on all three
+      # platforms, and it is the one pin in this file that a user cannot work
+      # around: a bundled interpreter does not get their distro's security
+      # updates, so whatever is written here is frozen into the tarball until
+      # the next release. It was '3.11' from the first commit for no better
+      # reason than that being what the development machine had.
+      #
+      # A native build takes the host's interpreter instead (CMakeLists.txt),
+      # so this does not constrain anyone building from source -- the floor
+      # there is 3.10, and 3.10 through 3.14 are all supported.
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.14'
 
       # SDL3 builds these from source on Linux; without them the X11 and
       # Wayland backends are silently omitted and the window has no way to be

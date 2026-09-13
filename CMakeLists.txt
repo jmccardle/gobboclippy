@@ -168,11 +168,24 @@ else()
     # it is on every layout: CPython's own keeps it in ensurepip/_bundled,
     # Debian moves it to /usr/share/python-wheels and patches ensurepip to
     # match. Asking ensurepip is the one query that answers for both.
+    #
+    # It has to be asked in two dialects, because 3.14 replaced _get_packages()
+    # with a context manager -- the wheel is no longer assumed to be a file on
+    # disk, so it is handed over as a path that is only guaranteed valid inside
+    # the with-block. For the two layouts above it is a real file either way and
+    # outlives the block; if some future layout hands back a temporary, the
+    # EXISTS check below fails and says so rather than packaging a path that
+    # evaporated.
     execute_process(
         COMMAND "${Python3_EXECUTABLE}" -c
 "import ensurepip, os
-p = ensurepip._get_packages()['pip']
-print(p.wheel_path or os.path.join(os.path.dirname(ensurepip.__file__), '_bundled', p.wheel_name))"
+ctx = getattr(ensurepip, '_get_pip_whl_path_ctx', None)
+if ctx is None:                                    # <= 3.13
+    p = ensurepip._get_packages()['pip']
+    print(p.wheel_path or os.path.join(os.path.dirname(ensurepip.__file__), '_bundled', p.wheel_name))
+else:                                              # 3.14+
+    with ctx() as path:
+        print(path)"
         OUTPUT_VARIABLE GC_PIP_WHEEL_PATH
         ERROR_VARIABLE  GC_PIP_WHEEL_ERR
         RESULT_VARIABLE GC_PIP_WHEEL_RC
