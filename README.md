@@ -527,15 +527,15 @@ places, only one of them on `sys.path`. The GitHub Linux job installs Tau's
 core from PyPI for real and then imports it from the pet, so the layout is
 checked rather than assumed.
 
-`.forgejo/workflows/build.yml` is meant to be the other half of that check —
+`.forgejo/workflows/build.yml` is written to be the other half of that check —
 it builds in a Debian container against whatever `python3-dev` that image has,
 which is the patched interpreter that would have got the path wrong, and it is
-the only place the mingw cross-compile is run under wine. **It has never
-completed a run.** Every execution since the workflow was added has failed in
-under 80 seconds, which is less time than fetching SDL3 takes, so it is failing
-during setup and has never reached a compiler. Nothing in this file should be
-read as verified by it. Until that is fixed, the Debian interpreter and the
-wine test are checked by hand or not at all.
+the only place the mingw cross-compile is run under wine. **It does not run.**
+That Forgejo instance has no runner able to do this work, so every execution
+since the workflow was added has failed during setup, inside a minute. The
+workflow is kept because it is correct and costs nothing to keep, but nothing
+in this file is verified by it: GitHub is the CI that checks things today, and
+the Debian interpreter and the wine test are done by hand or not at all.
 
 The runtime ignores `PYTHONPATH`, `PYTHONHOME` and the user site, as
 `python -E -s` does. It is self-contained by construction, and the host's

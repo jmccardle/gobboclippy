@@ -21,13 +21,14 @@ petdex pets in nine states; a control channel and a τ extension that drives one
 a settings window whose fields Python defines. Windows and macOS build and
 smoke-test in CI. There are no TODO markers in the tree.
 
-Two things are known-broken rather than done. **The Forgejo CI has never
-passed** — every run since the workflow was added fails inside a minute, which
-is less time than fetching SDL3 takes, so the Debian-interpreter check and the
-wine test of the cross-compiled Windows build are not actually running. GitHub
-is the only CI that verifies anything today. And **a local `package` stages
-`assets/` verbatim**, so untracked pet art lands inside a locally built archive;
-released artifacts are built from a clean checkout and are unaffected.
+Two things are not what they look like. **The Forgejo CI does not run** — that
+instance has no runner able to build this, so every execution fails during
+setup and always has. The workflow is correct and kept for when one exists;
+until then GitHub is the only CI that verifies anything, and the
+Debian-interpreter check and the wine test of the cross-compiled Windows build
+are done by hand. And **a local `package` stages `assets/` verbatim**, so
+untracked pet art lands inside a locally built archive; released artifacts are
+built from a clean checkout and are unaffected.
 
 ---
 
