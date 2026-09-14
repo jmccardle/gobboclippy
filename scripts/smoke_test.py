@@ -11,6 +11,7 @@ Exits non-zero on the first failed assertion.
 
 import os
 import sys
+import threading
 
 import clippy
 
@@ -30,7 +31,8 @@ caps = clippy.capabilities()
 clippy.log(f"driver={caps['video_driver']} platform={caps['platform']}")
 
 for key in ("platform", "video_driver", "borderless", "always_on_top",
-            "transparent", "skip_taskbar", "tray", "microphone", "notes"):
+            "transparent", "skip_taskbar", "tray", "microphone", "hotkey",
+            "hotkey_release", "notes"):
     if key not in caps:
         FAILURES.append(f"capabilities() missing key {key!r}")
 
@@ -299,6 +301,113 @@ else:
     check("a refused start leaves the mic idle", clippy.mic.active(), False)
     check("a refused start queued nothing", clippy.mic.queued(), 0)
     check("a refused start fires no hook", mic_seen, [])
+
+# --- the global hotkey ------------------------------------------------------
+# Pressing the key is not covered here and cannot be. A global grab is global:
+# exercising it needs a focused desktop with a keyboard, and no runner has one.
+# What is covered is everything up to the press -- parsing, normalising, the
+# grab itself and every refusal -- which is where the three platforms differ.
+
+check("nothing bound yet", clippy.hotkey.bound(), None)
+check("available() agrees with capabilities()",
+      clippy.hotkey.available(), caps["hotkey"])
+check("delivers_release() agrees with capabilities()",
+      clippy.hotkey.delivers_release(), caps["hotkey_release"])
+
+# The two bits may disagree -- Windows grabs and reports no release -- but only
+# in that direction. A release without a hotkey to release would be a promise
+# nothing could keep.
+check("a release bit implies a hotkey bit",
+      caps["hotkey"] or not caps["hotkey_release"], True)
+
+clippy.on("hotkey", lambda chord: None)
+clippy.on("hotkey_release", lambda chord: None)
+clippy.log("PASS  on() accepts 'hotkey' and 'hotkey_release'")
+
+# A malformed chord is a ValueError on every platform, because parsing happens
+# before anything is asked of the window system. 'Page Up' is in that list on
+# purpose: SDL spells it 'PageUp', and the error message used to advertise the
+# spelling it then rejected.
+for bad in ("", "   ", "G", "Shift+G", "Ctrl+Alt+", "Ctrl++G",
+            "Ctrl+Splat+G", "Ctrl+Alt+Wobble", "Ctrl+Alt+Page Up"):
+    try:
+        clippy.hotkey.bind(bad)
+    except ValueError:
+        pass
+    except RuntimeError as exc:
+        FAILURES.append(f"bind({bad!r}) raised RuntimeError, not ValueError: {exc}")
+    else:
+        FAILURES.append(f"bind({bad!r}) was accepted")
+        clippy.hotkey.unbind()
+clippy.log("PASS  malformed chords are refused with ValueError")
+check("a refused bind leaves nothing bound", clippy.hotkey.bound(), None)
+
+# Ctrl+Alt+Shift+F10 because F10 is on every keyboard there is, and nothing on
+# a stock desktop wants that combination of modifiers with it.
+TEST_CHORD = "Ctrl+Alt+Shift+F10"
+
+# clippy.mic.read() is safe from a worker thread and this deliberately is not,
+# so the difference has to arrive as a refusal rather than as a race. Checked
+# before the availability branch below because the thread rule is the first
+# thing bind() looks at and holds on every platform.
+off_thread = []
+
+
+def bind_off_thread():
+    try:
+        clippy.hotkey.bind(TEST_CHORD)
+        off_thread.append("accepted")
+    except RuntimeError:
+        off_thread.append("refused")
+    except BaseException as exc:                     # noqa: BLE001
+        off_thread.append(f"{type(exc).__name__}")
+
+
+worker = threading.Thread(target=bind_off_thread)
+worker.start()
+worker.join()
+check("bind() refuses a worker thread", off_thread, ["refused"])
+check("and bound nothing doing so", clippy.hotkey.bound(), None)
+
+if not caps["hotkey"]:
+    # Not skipped -- the refusal is the assertion. A platform that cannot grab
+    # must say so rather than accept a chord that will never fire.
+    try:
+        clippy.hotkey.bind(TEST_CHORD)
+    except RuntimeError as exc:
+        clippy.log(f"PASS  no hotkey support, and bind() says so ({str(exc)[:56]}...)")
+    else:
+        FAILURES.append("bind() succeeded where capabilities() said it could not")
+        clippy.hotkey.unbind()
+else:
+    unavailable = None
+    got = None
+    try:
+        got = clippy.hotkey.bind(TEST_CHORD.lower())
+    except RuntimeError as exc:
+        # Another application owning the chord is a fact about the machine, not
+        # a defect -- it happens on a developer's desktop and not on a runner.
+        # The refusal still has to be clean, and that is what gets checked.
+        unavailable = str(exc)
+
+    if unavailable:
+        clippy.log(f"note: {TEST_CHORD} is not free here ({unavailable[:56]}...)")
+        check("an owned chord leaves nothing bound", clippy.hotkey.bound(), None)
+    else:
+        check("bind() answers with its own spelling", got, TEST_CHORD)
+        check("bound() reports the same", clippy.hotkey.bound(), TEST_CHORD)
+
+        # Binding the chord that is already bound is the sharp case: bind()
+        # drops the old grab before taking the new one, and if it did not, this
+        # would collide with our own grab and fail.
+        check("rebinding the same chord works", clippy.hotkey.bind(TEST_CHORD),
+              TEST_CHORD)
+        check("and is still the bound one", clippy.hotkey.bound(), TEST_CHORD)
+
+        clippy.hotkey.unbind()
+        check("unbind() gives the chord back", clippy.hotkey.bound(), None)
+        clippy.hotkey.unbind()
+        clippy.log("PASS  unbind() is idempotent")
 
 # --- geometry --------------------------------------------------------------
 w, h = clippy.size()

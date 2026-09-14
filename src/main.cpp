@@ -17,6 +17,7 @@
 #include "App.h"
 #include "AppPaths.h"
 #include "Drawable.h"
+#include "Hotkey.h"
 #include "Mic.h"
 #include "PyClippy.h"
 #include "Settings.h"
@@ -683,6 +684,23 @@ int main(int argc, char** argv)
                             : "Microphone unavailable: " + mic_err);
     }
 
+    // --- global hotkey ----------------------------------------------------
+    // Asked the same way and for the same reason as the microphone: so
+    // --capabilities can answer "can this desktop give the pet a shortcut"
+    // without taking a chord away from it to find out. Nothing is grabbed here
+    // -- a script calls clippy.hotkey.bind() when it has one to bind.
+    Hotkey::attach(app.window.handle());
+    app.window.caps_mutable().hotkey         = Hotkey::available();
+    app.window.caps_mutable().hotkey_release = Hotkey::deliversRelease();
+    if (!Hotkey::available()) {
+        app.window.caps_mutable().notes.push_back(
+            std::string("No global hotkey: ") + Hotkey::unavailableReason());
+    } else if (!Hotkey::deliversRelease()) {
+        app.window.caps_mutable().notes.push_back(
+            "Global hotkeys report the press only on this platform, so "
+            "'hotkey_release' never fires and push-to-talk is not possible.");
+    }
+
     if (opts.print_caps_only) {
         std::printf("%s", app.window.caps().report().c_str());
         app.tray.destroy();
@@ -772,6 +790,27 @@ int main(int argc, char** argv)
             }
         }
 
+        // Global hotkeys, which are not SDL events and so are not in the switch
+        // above. The platform backends queue rather than dispatch, and this is
+        // where the queue is emptied -- after the pump has returned, so a
+        // script's hotkey handler can call back into SDL like every other hook
+        // can. src/Hotkey.h has the long version.
+        //
+        // Deliberately not offered to Settings::handleEvent first: a global
+        // chord is not the dialog's business, it fires while the dialog is up,
+        // and what that means is the script's decision rather than the host's.
+        // The name is copied rather than borrowed across the loop: a hook is
+        // free to call clippy.hotkey.bind() or unbind(), either of which
+        // replaces the Chord the pointer was into. Events already drained
+        // still report the chord that was bound when they happened, which is
+        // the true answer -- they were pressed before anything was rebound.
+        if (const Hotkey::Chord* chord = Hotkey::bound()) {
+            const std::string name = chord->canonical;
+            for (const Hotkey::Event& h : Hotkey::drain()) {
+                PyClippy::fireHotkey(h.pressed, name.c_str());
+            }
+        }
+
         const Uint64 now_ns = SDL_GetTicksNS();
         float dt = (float)((double)(now_ns - previous_ns) / 1.0e9);
         previous_ns = now_ns;
@@ -800,6 +839,11 @@ int main(int argc, char** argv)
     // The device goes before the interpreter does: a script's audio thread is
     // still alive here, and it reads through this stream.
     Mic::stop();
+
+    // The grab goes back to the desktop before the window it hangs off is
+    // destroyed, and before the interpreter that would have been handed any
+    // remaining queued press.
+    Hotkey::quit();
 
     PyEval_RestoreThread(loop_gil);
 

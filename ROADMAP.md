@@ -14,17 +14,19 @@ a change of mind that should be argued for.
 Items point at the prose that explains them rather than restating it. The
 explanations live in `README.md` and `docs/harvest.md` and should stay there.
 
-**Where this stands.** v0.5.0 is tagged and released. The base is done: window,
-transparency, tray, the harvested drawing layer, the effect compositor, the
-bundled interpreter and a relocatable package on three platforms; a microphone;
-petdex pets in nine states; a control channel and a τ extension that drives one;
-a settings window whose fields Python defines. Windows and macOS build and
-smoke-test in CI. There are no TODO markers in the tree.
+**Where this stands.** v0.5.0 is tagged and released; a global hotkey has landed
+since. The base is done: window, transparency, tray, the harvested drawing
+layer, the effect compositor, the bundled interpreter and a relocatable package
+on three platforms; a microphone; a global chord that reaches the pet without
+focus; petdex pets in nine states; a control channel and a τ extension that
+drives one; a settings window whose fields Python defines. Windows and macOS
+build and smoke-test in CI. There are no TODO markers in the tree.
 
-Two things are not what they look like. **The Forgejo CI does not run** — that
-instance has no runner able to build this, so every execution fails during
-setup and always has. The workflow is correct and kept for when one exists;
-until then GitHub is the only CI that verifies anything, and the
+Two things are not what they look like. **The Forgejo CI does not run, and never
+will** — that instance has no runner able to build this and one is not coming,
+so every execution fails during setup and always has. The workflow is correct
+and costs nothing to keep, but a red run there is expected state rather than
+something to investigate: GitHub is the only CI that verifies anything, and the
 Debian-interpreter check and the wine test of the cross-compiled Windows build
 are done by hand. And **a local `package` stages `assets/` verbatim**, so
 untracked pet art lands inside a locally built archive; released artifacts are
@@ -34,27 +36,46 @@ built from a clean checkout and are unaffected.
 
 ## Hearing
 
-`scripts/assistant.py` is a dictation loop today: the double-click toggles the
-microphone, every committed utterance goes to the agent, and the reply is drawn
-on the window.
+`scripts/assistant.py` is a dictation loop today: the double-click or the global
+chord toggles the microphone, every committed utterance goes to the agent, and
+the reply is drawn on the window.
 
 **The pet does not decide whether it was spoken to.** Listening is something the
-user turns on, in one of three ways, and that is the whole of the policy.
+user turns on, in one of three ways — two of which now exist, the double-click
+and the global chord — and that is the whole of the policy.
 Speaker identification and turn-taking analysis are out of scope for the base
 system — see **Cuts**.
 
-- [ ] **Global input capture.** Both remaining ways in need the same new host
-      facility, and neither can be built on the window: the pet never holds
-      focus, so SDL's keyboard events do not arrive while the user is working in
-      something else. Per-platform, and the reason these are one item rather
-      than two — X11 `XGrabKey`, `RegisterHotKey` on Windows, and an event tap
-      on macOS, which needs an Accessibility permission and is therefore a
-      second TCC prompt after the microphone's.
-- [ ] **Hotkey toggle.** A global chord does what the double-click does.
+**Global input capture is done, and the hotkey toggle with it.** `src/Hotkey.h`
+is the facility and `src/platform/Hotkey*.cpp` the three backends; `Ctrl+Alt+G`
+toggles the microphone in `scripts/assistant.py`, configurable as
+`hotkey.toggle`. Two findings from building it are worth keeping, because both
+contradict what this file used to say:
+
+* **macOS needs no Accessibility permission and no second TCC prompt.** Carbon's
+  `RegisterEventHotKey` registers one chord with the window server. The event
+  tap that would need Accessibility is only required to observe keys you have
+  *not* registered, which is not what a hotkey is.
+* **Windows reports the press and not the release.** `RegisterHotKey` posts
+  `WM_HOTKEY` and there is no counterpart; X11 and macOS report both. So
+  `--capabilities` answers two questions, `hotkey` and `hotkey release`, and the
+  second is what push-to-talk has to consult.
+
 - [ ] **Push to talk.** Hold to record. The key release *is* the endpoint: it
       replaces the accumulator's committed `final` rather than racing it, so
       under PTT there is nothing to project and no half-sentence to send.
       `scripts/gobbo/accumulate.py` is the seam this lands in.
+
+      Two things stand between here and there, neither of them the endpoint
+      logic. **Windows needs a second backend** — a `WH_KEYBOARD_LL` hook, which
+      sees every keystroke on the desktop rather than one registered chord,
+      needs its own message pump, and is the shape of thing security software
+      objects to. Until it exists, `clippy.hotkey.delivers_release()` is False
+      there and PTT must refuse with that as the reason rather than invent a
+      release from a timer. **And two chords have to be bindable at once**,
+      since a toggle and a hold are both useful: `bind()` takes one today, and
+      the hook is already handed the chord so that `bind(chord, name)` is an
+      added argument rather than a changed signature.
 - [ ] **Conversational mode.** The double-click's behaviour, made deliberate:
       the agent listens and answers on pauses until it is switched off. This is
       the mode with the hard problem in it — see the echo note below.
@@ -178,8 +199,14 @@ none of them needs C++.
       progress state and somewhere for the failure to appear.
 - [ ] **The startup script.** Which of `scripts/` runs, which today is
       `--script` on a command line the user of a packaged build does not have.
-- [ ] **The voice**, once **Speaking** exists, and **the input bindings**, once
-      **Hearing** does.
+- [ ] **The hotkey chord.** `hotkey.toggle` is config-file only today. A text
+      field is not enough on its own: `clippy.hotkey.bind()` already refuses a
+      malformed chord with a sentence and an owned chord by name, so the useful
+      version binds on Apply and puts that sentence in the dialog rather than
+      saving a chord that will not work. Capturing a chord by pressing it is the
+      nicer affordance and needs nothing new — the host is already grabbing.
+- [ ] **The voice**, once **Speaking** exists, and **push to talk's binding**,
+      once that exists.
 - [ ] **`--size` against a saved size.** The flag loses to the config file, and
       also lost to the script's own hardcoded size before any of this — neither
       the host nor the script can currently tell whether it was passed. Small,
@@ -206,6 +233,14 @@ so the check is a person on the platform rather than a test.
 - [ ] **Pets off Linux.** The WebP decode and its failure are in the smoke test
       on all three platforms. Installing a pet needs the network and driving one
       needs a window; runners have neither.
+- [ ] **The hotkey actually firing, off Linux.** Binding, normalising, the
+      refusals and the grab are all in the smoke test and run on all three
+      platforms. Pressing the key is not and cannot be: a global grab is global,
+      so it needs a focused desktop with a keyboard, and no runner has one.
+      Locally it is verified with `xdotool`, including the held key, the
+      modifiers being released first, and both lock modifiers. On macOS the two
+      things to check first are that `kEventHotKeyReleased` arrives at all and
+      that no permission dialog appears.
 
 ---
 
@@ -217,8 +252,10 @@ Not work. Recorded so that rediscovering them costs nothing.
   `SDL_SetWindowAlwaysOnTop` returns success anyway, so the flag reads back set
   while nothing happened — `src/Capabilities.cpp` reports against the video
   driver rather than trusting SDL. `SDL_SetWindowPosition` fails outright, and a
-  desktop pet that cannot place itself is not one. X11/XWayland is the supported
-  Linux path.
+  desktop pet that cannot place itself is not one. **Nor can a Wayland client
+  grab a global key** — `keyboard-shortcuts-inhibit` needs keyboard focus,
+  which is the thing a pet never has — so `clippy.hotkey.available()` is False
+  there and says why. X11/XWayland is the supported Linux path.
 - **The GNOME tray.** SDL talks to libayatana-appindicator over D-Bus; vanilla
   GNOME Shell hosts no StatusNotifierItem, so `SDL_CreateTray()` succeeds and no
   icon appears. Not detectable from SDL. GNOME users need the AppIndicator

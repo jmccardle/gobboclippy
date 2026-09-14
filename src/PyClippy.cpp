@@ -9,6 +9,7 @@
 #include "App.h"
 #include "AppPaths.h"
 #include "Drawable.h"
+#include "Hotkey.h"
 #include "Mic.h"
 #include "PyDraw.h"
 #include "Settings.h"
@@ -181,7 +182,7 @@ PyObject* c_capabilities(PyObject*, PyObject*)
     }
 
     PyObject* d = Py_BuildValue(
-        "{s:s, s:s, s:O, s:O, s:O, s:O, s:O, s:O, s:N, s:N}",
+        "{s:s, s:s, s:O, s:O, s:O, s:O, s:O, s:O, s:O, s:O, s:N, s:N}",
         "platform",      c.platform.c_str(),
         "video_driver",  c.video_driver.c_str(),
         "borderless",    c.borderless    ? Py_True : Py_False,
@@ -190,6 +191,8 @@ PyObject* c_capabilities(PyObject*, PyObject*)
         "skip_taskbar",  c.skip_taskbar  ? Py_True : Py_False,
         "tray",          c.tray          ? Py_True : Py_False,
         "microphone",    c.microphone    ? Py_True : Py_False,
+        "hotkey",        c.hotkey         ? Py_True : Py_False,
+        "hotkey_release", c.hotkey_release ? Py_True : Py_False,
         "image_formats", formats,
         "notes",         notes);
     if (!d) { Py_DECREF(formats); Py_DECREF(notes); }
@@ -209,6 +212,7 @@ PyObject* c_on(PyObject*, PyObject* args)
 
     static const char* kKnown[] = {"show", "hide", "quit", "frame",
                                    "click", "double_click", "mic",
+                                   "hotkey", "hotkey_release",
                                    "configure", nullptr};
     bool known = false;
     for (int i = 0; kKnown[i]; ++i) {
@@ -220,7 +224,8 @@ PyObject* c_on(PyObject*, PyObject* args)
         PyErr_Format(PyExc_ValueError,
                      "clippy.on(): unknown event '%s' (expected one of "
                      "'show', 'hide', 'quit', 'frame', 'click', "
-                     "'double_click', 'mic', 'configure')", event);
+                     "'double_click', 'mic', 'hotkey', 'hotkey_release', "
+                     "'configure')", event);
         return nullptr;
     }
 
@@ -851,6 +856,115 @@ PyModuleDef kMicModule = {
     nullptr, nullptr, nullptr, nullptr
 };
 
+// --- clippy.hotkey ----------------------------------------------------------
+//
+// A chord the pet hears while the user is working somewhere else. The host owns
+// the grab and the platform's opinions about it; the script owns what the key
+// means. src/Hotkey.h is where the three platforms' disagreements are written
+// down, and the two capability questions below are how a script asks about them
+// without having to know which platform it is on.
+
+PyObject* c_hotkey_available(PyObject*, PyObject*)
+{
+    return PyBool_FromLong(Hotkey::available() ? 1 : 0);
+}
+
+PyObject* c_hotkey_delivers_release(PyObject*, PyObject*)
+{
+    return PyBool_FromLong(Hotkey::deliversRelease() ? 1 : 0);
+}
+
+// ValueError for a chord that is wrong, RuntimeError for a chord that is right
+// and cannot be had. The split matters to a caller: the first is a typo in a
+// config file and the second is a desktop that has already taken the key, and
+// only one of them is fixed by editing the string.
+PyObject* c_hotkey_bind(PyObject*, PyObject* args)
+{
+    const char* text = nullptr;
+    if (!PyArg_ParseTuple(args, "s:bind", &text)) return nullptr;
+
+    Hotkey::Chord chord;
+    std::string err;
+    if (!Hotkey::parse(text, chord, err)) {
+        PyErr_SetString(PyExc_ValueError, err.c_str());
+        return nullptr;
+    }
+    if (!Hotkey::bind(chord, err)) {
+        PyErr_SetString(PyExc_RuntimeError, err.c_str());
+        return nullptr;
+    }
+    return PyUnicode_FromString(chord.canonical.c_str());
+}
+
+// The same thread rule as bind(). Hotkey::unbind() is void because the host
+// calls it during shutdown where there is nothing to report to, so the check
+// is here, at the one entry point a script can reach.
+PyObject* c_hotkey_unbind(PyObject*, PyObject*)
+{
+    if (!Hotkey::onMainThread()) {
+        PyErr_SetString(PyExc_RuntimeError,
+                        "clippy.hotkey.unbind(): clippy.hotkey can only be "
+                        "used from the thread the event loop runs on");
+        return nullptr;
+    }
+    Hotkey::unbind();
+    Py_RETURN_NONE;
+}
+
+PyObject* c_hotkey_bound(PyObject*, PyObject*)
+{
+    const Hotkey::Chord* c = Hotkey::bound();
+    if (!c) Py_RETURN_NONE;
+    return PyUnicode_FromString(c->canonical.c_str());
+}
+
+PyMethodDef kHotkeyMethods[] = {
+    {"available", c_hotkey_available, METH_NOARGS,
+     "available() -> can this platform grab a global key at all.\n"
+     "False on Wayland, where a client cannot: the shortcuts-inhibit protocol\n"
+     "needs keyboard focus and a desktop pet never has it. --capabilities\n"
+     "prints the reason."},
+    {"delivers_release", c_hotkey_delivers_release, METH_NOARGS,
+     "delivers_release() -> whether 'hotkey_release' will ever fire.\n"
+     "False on Windows, whose RegisterHotKey reports the press and has no\n"
+     "release message at all. A toggle works everywhere; anything that needs\n"
+     "to know when the key came up must check this first rather than wait for\n"
+     "an event that is not coming."},
+    {"bind",      c_hotkey_bind,      METH_VARARGS,
+     "bind(chord) -> the chord as the host spells it, e.g. 'Ctrl+Alt+G'.\n"
+     "Modifier names are case-insensitive and any order; Win, Cmd and Option\n"
+     "are accepted for Super and Alt. Key names are SDL's.\n"
+     "Replaces any previous binding.\n"
+     "Raises ValueError when the chord itself is wrong: it does not parse, the\n"
+     "key is not a name, or there is no Ctrl, Alt or Super in it -- a global\n"
+     "grab takes the key from every other application, so a bare key would\n"
+     "stop you typing it anywhere.\n"
+     "Raises RuntimeError when the chord is fine and cannot be had: something\n"
+     "else already owns it, this keyboard has no such key, or the platform\n"
+     "cannot grab at all. The split is the useful one -- only the first is\n"
+     "fixed by correcting the string."},
+    {"unbind",    c_hotkey_unbind,    METH_NOARGS,
+     "unbind() -> give the chord back to the desktop. Idempotent."},
+    // Both of the above are main-thread only, and say so when they are not.
+    // Unlike clippy.mic.read(), which exists to be called from a thread, this
+    // is setup rather than work: a worker that wants to rebind hands the chord
+    // to the 'frame' hook. The alternative was a lock, and a lock here would
+    // invert against the one Xlib takes inside XNextEvent -- src/Hotkey.h has
+    // the deadlock written out.
+    {"bound",     c_hotkey_bound,     METH_NOARGS,
+     "bound() -> the bound chord, or None."},
+    {nullptr, nullptr, 0, nullptr}
+};
+
+PyModuleDef kHotkeyModule = {
+    PyModuleDef_HEAD_INIT,
+    "clippy.hotkey",
+    "A global chord. The host owns the grab, the script owns what it means.",
+    -1,
+    kHotkeyMethods,
+    nullptr, nullptr, nullptr, nullptr
+};
+
 PyMethodDef kMethods[] = {
     {"show",         c_show,         METH_NOARGS,  "Show the pet window."},
     {"hide",         c_hide,         METH_NOARGS,  "Hide the pet window (stays running in the tray)."},
@@ -873,8 +987,12 @@ PyMethodDef kMethods[] = {
      "  'double_click'          (x, y, button)\n"
      "  'mic'                   True when recording started, False when it "
      "stopped\n"
+     "  'hotkey'                the bound chord, as a string\n"
+     "  'hotkey_release'        the same, when the key comes back up\n"
      "A double-click also fires 'click' twice, with clicks 1 then 2, as every "
-     "toolkit does it: use one hook or the other, not both."},
+     "toolkit does it: use one hook or the other, not both.\n"
+     "'hotkey_release' never fires on Windows -- see "
+     "clippy.hotkey.delivers_release()."},
     {"log",          c_log,          METH_VARARGS, "log(msg) -> write to the SDL log."},
     {"settings_open", c_settings_open, METH_VARARGS,
      "settings_open(spec) -> open the settings window on a field schema.\n"
@@ -927,10 +1045,17 @@ PyObject* moduleInit()
 
     // clippy.mic is an attribute rather than a package: `import clippy` gets
     // it, and there is no second module for the import machinery to find and
-    // disagree about.
+    // disagree about. clippy.hotkey is the same arrangement.
     PyObject* mic = PyModule_Create(&kMicModule);
     if (!mic || PyModule_AddObject(m, "mic", mic) < 0) {
         Py_XDECREF(mic);
+        Py_DECREF(m);
+        return nullptr;
+    }
+
+    PyObject* hotkey = PyModule_Create(&kHotkeyModule);
+    if (!hotkey || PyModule_AddObject(m, "hotkey", hotkey) < 0) {
+        Py_XDECREF(hotkey);
         Py_DECREF(m);
         return nullptr;
     }
@@ -1072,6 +1197,15 @@ bool fireMic(bool active)
     const bool ok = fn
         ? finish(PyObject_CallFunction(fn, "O", active ? Py_True : Py_False))
         : true;
+    PyGILState_Release(g);
+    return ok;
+}
+
+bool fireHotkey(bool pressed, const char* chord)
+{
+    PyGILState_STATE g = PyGILState_Ensure();
+    PyObject* fn = hook(pressed ? "hotkey" : "hotkey_release");
+    const bool ok = fn ? finish(PyObject_CallFunction(fn, "s", chord)) : true;
     PyGILState_Release(g);
     return ok;
 }

@@ -200,6 +200,27 @@ else:                                              # 3.14+
 endif()
 
 # ---------------------------------------------------------------------------
+# Global hotkeys
+# ---------------------------------------------------------------------------
+# One backend per platform, chosen here rather than by #ifdef inside one file:
+# each is a different API with different capabilities (Windows reports no key
+# release at all), and the linker picking one keeps each file free to include
+# only its own platform's headers. src/Hotkey.h is the shared interface and
+# carries the comparison.
+#
+# The unsupported stub is not a fallback. It refuses and says why, so a build
+# outside the three platforms we ship still links and still tells the truth.
+if(WIN32)
+    set(GC_HOTKEY_BACKEND src/platform/HotkeyWin32.cpp)
+elseif(APPLE)
+    set(GC_HOTKEY_BACKEND src/platform/HotkeyMac.cpp)
+elseif(UNIX AND NOT ANDROID)
+    set(GC_HOTKEY_BACKEND src/platform/HotkeyX11.cpp)
+else()
+    set(GC_HOTKEY_BACKEND src/platform/HotkeyUnsupported.cpp)
+endif()
+
+# ---------------------------------------------------------------------------
 # Executable
 # ---------------------------------------------------------------------------
 add_executable(gobboclippy
@@ -211,6 +232,8 @@ add_executable(gobboclippy
     src/AppPaths.cpp
     src/Mic.cpp
     src/Settings.cpp
+    src/Hotkey.cpp
+    ${GC_HOTKEY_BACKEND}
 
     # The drawing layer harvested from McRogueFace. Everything above this line
     # is host; everything below it is the sprite/text/animation subset, and
@@ -243,6 +266,22 @@ endif()
 target_link_libraries(gobboclippy PRIVATE ${GC_PYTHON_TARGET})
 target_link_libraries(gobboclippy PRIVATE webpdecoder)
 target_link_libraries(gobboclippy PRIVATE gc_imgui)
+
+# What the hotkey backend needs.
+#
+# On Linux that is libX11, linked directly rather than dlopened the way SDL
+# does it. That is not a new runtime requirement: this program already refuses
+# to start without a tray icon, the tray needs GTK3 and
+# libayatana-appindicator3, and both of those link libX11.so.6 themselves. So
+# the dependency was already mandatory and undeclared; this declares it.
+if(WIN32)
+    target_link_libraries(gobboclippy PRIVATE user32)
+elseif(APPLE)
+    target_link_libraries(gobboclippy PRIVATE "-framework Carbon")
+elseif(UNIX AND NOT ANDROID)
+    find_package(X11 REQUIRED)
+    target_link_libraries(gobboclippy PRIVATE X11::X11)
+endif()
 
 # The wheel's file name is a build-time fact the binary states rather than
 # globs for, in the same way it states the stdlib zip's name.

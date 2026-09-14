@@ -1,8 +1,14 @@
 """gobboclippy, listening.
 
-Double-click the pet to toggle the microphone. What it hears goes to a
-transcriber; committed utterances go to the agent; the answer is drawn on the
-window.
+Double-click the pet, or press Ctrl+Alt+G from anywhere, to toggle the
+microphone. What it hears goes to a transcriber; committed utterances go to the
+agent; the answer is drawn on the window.
+
+The chord is the one that matters in practice. The pet never holds keyboard
+focus and is usually behind whatever you are working in, so "double-click the
+pet" means finding it first, which is the wrong amount of effort for saying one
+sentence. It is the ``hotkey.toggle`` key in the config file; setting it to
+null binds nothing and leaves the double-click as the only way in.
 
 Run it with:
 
@@ -26,6 +32,12 @@ import clippy
 from gobbo import accumulate, asr, config, settings, tau
 
 WINDOW = (360, 420)
+
+# A default is right here, unlike the transcriber and agent commands: which
+# chord to use is a preference rather than something only the user can know,
+# and a wrong guess costs a line in a config file instead of a pet that never
+# answers. Ctrl+Alt+G is not owned by GNOME, KDE or Xfce out of the box.
+HOTKEY_DEFAULT = "Ctrl+Alt+G"
 
 INK = (28, 33, 42)
 PAPER = (238, 242, 248)
@@ -278,6 +290,42 @@ class Assistant:
             self.agent.stop()
 
 
+def bind_hotkey(me):
+    """Grab the configured chord. Returns what was bound, or None.
+
+    Three outcomes, and they are deliberately not treated alike:
+
+    * The platform cannot grab at all -- Wayland, most often. Logged and left
+      there. The capability report already said so at startup, the pet still
+      works by double-click, and a permanent warning on its face about a thing
+      the user cannot change is noise rather than information.
+
+    * The chord is configured and cannot be had: a typo, or another
+      application already owns it. That is a real problem with a real fix, so
+      it goes on screen with the config file's path in it.
+
+    * Nothing configured (``hotkey.toggle`` set to null). Nothing to do.
+    """
+    chord = config.setting("hotkey", "toggle", HOTKEY_DEFAULT)
+    if not chord:
+        return None
+
+    if not clippy.hotkey.available():
+        clippy.log(f"no global hotkey here, so {chord} is not bound; "
+                   "--capabilities says why. Double-click still works.")
+        return None
+
+    try:
+        bound = clippy.hotkey.bind(chord)
+        clippy.log(f"{bound} toggles the microphone")
+        return bound
+    except (ValueError, RuntimeError) as e:
+        me.fail(f"could not bind {chord}: {e}\n\n"
+                f"Change hotkey.toggle in {config.path()}, or set it to null "
+                f"to use the double-click only.")
+        return None
+
+
 def place_bottom_right(margin=40):
     """Park the pet above the bottom-right corner of the display it is on."""
     x, y, dw, dh = clippy.display_bounds()
@@ -299,9 +347,12 @@ def main():
 
     clippy.on("frame", me.frame)
     clippy.on("double_click", me.toggle_mic)
+    clippy.on("hotkey", me.toggle_mic)
     clippy.on("mic", me.on_mic)
     clippy.on("quit", me.shutdown)
     clippy.on("configure", settings.open)
+
+    chord = bind_hotkey(me)
 
     if caps["always_on_top"] and not saved_geometry:
         place_bottom_right()
@@ -309,6 +360,8 @@ def main():
 
     if not caps["microphone"]:
         me.fail("no microphone; --capabilities says why")
+    elif chord:
+        me.set_status(f"double-click or {chord} to listen", SLATE)
     else:
         me.set_status("double-click to listen", SLATE)
 

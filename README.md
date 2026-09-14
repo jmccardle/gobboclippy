@@ -22,7 +22,7 @@ was cut, and why.
       ├───────────────┤
       │  drawing      │   Texture, Font, Sprite, Caption, Animation, Easing
       ├───────────────┤
-      │  C++ host     │   window flags, tray, event loop, paths, microphone
+      │  C++ host     │   window flags, tray, event loop, paths, mic, hotkey
       ├───────────────┤
       │  SDL3         │   one dependency, four platforms
       ╰───────────────╯
@@ -57,6 +57,8 @@ gobboclippy 0.5.0  (SDL 3.4.16, Python 3.14)
   skip taskbar  : yes
   tray icon     : yes
   microphone    : yes
+  global hotkey : yes
+  hotkey release: yes
   image formats : png, webp
 ```
 
@@ -67,8 +69,10 @@ gobboclippy 0.5.0  (SDL 3.4.16, Python 3.14)
 | always on top | yes | yes | yes | **no** |
 | skip taskbar | yes | yes | yes | yes |
 | tray icon | yes | yes | GTK3 + appindicator | GTK3 + appindicator |
+| global hotkey | yes | yes | yes | **no** |
+| hotkey key release | **no** | yes | yes | — |
 
-Two caveats worth knowing before you file a bug:
+Three caveats worth knowing before you file a bug:
 
 **Wayland's `xdg-shell` has no always-on-top, and no positioning either.**
 SDL's Wayland backend registers no always-on-top hook at all, yet
@@ -92,6 +96,16 @@ as fatal rather than starting unreachable:
 ```
 sudo apt install libgtk-3-0 libayatana-appindicator3-1
 ```
+
+**Windows reports a global hotkey being pressed and never reports it being
+released.** `RegisterHotKey` posts `WM_HOTKEY` on the press and there is no
+corresponding message — not a missing flag, the API simply has one event. X11
+and macOS report both. That is why the capability report answers two questions
+instead of one: a hotkey that toggles something works everywhere, and anything
+that needs to know when the key came back up has to ask
+`clippy.hotkey.delivers_release()` first rather than wait for an event that is
+not coming. Synthesising the release from a timer was the alternative, and a
+held key that lets go on its own is worse than a documented gap.
 
 ## Deliberately not implemented
 
@@ -124,7 +138,12 @@ cmake --build build -j
 ```
 
 Linux also needs the SDL3 build dependencies, or you get a binary with no X11
-or Wayland backend:
+or Wayland backend. `libx11-dev` is required outright rather than optionally:
+the global hotkey backend calls `XGrabKey` directly, so unlike SDL — which
+dlopens X11 — this binary links `libX11.so.6`. That is a declaration of
+something already mandatory rather than a new requirement, because the tray is
+fatal if missing and both GTK3 and libayatana-appindicator3 link libX11
+themselves.
 
 ```sh
 sudo apt install libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
@@ -216,13 +235,23 @@ resize its children, and that a hidden pet refuses to record:
 
 ### The assistant
 
-`scripts/assistant.py` is the one that listens. Double-click the pet to toggle
-the microphone; what it hears goes to a transcriber, committed utterances go to
-an agent, and the answer is drawn on the window.
+`scripts/assistant.py` is the one that listens. Press **Ctrl+Alt+G** from
+anywhere, or double-click the pet, to toggle the microphone; what it hears goes
+to a transcriber, committed utterances go to an agent, and the answer is drawn
+on the window.
 
 ```sh
 ./gobboclippy --script scripts/assistant.py
 ```
+
+The chord is the one that matters in practice, and the double-click is the
+fallback rather than the other way round: the pet never holds keyboard focus
+and is usually behind whatever you are working in, so double-clicking it means
+finding it first — the wrong amount of effort for saying one sentence. It is
+the `hotkey.toggle` key in the config file below, `null` binds nothing, and
+where the platform cannot grab a global key at all (Wayland) the pet says so in
+the log and carries on with the double-click. See
+[Global hotkeys](#global-hotkeys).
 
 Both of those are **subprocesses speaking one line of JSON at a time**, because
 that is what they already are, and neither is imported:
@@ -248,6 +277,9 @@ double-click prints the file to write and the JSON to put in it.
   "asr": {
     "command": ["/path/to/asr-venv/bin/python",
                 "/path/to/tectum/tectum/audio/streaming_stt_worker.py"]
+  },
+  "hotkey": {
+    "toggle": "Ctrl+Alt+G"
   }
 }
 ```
@@ -565,7 +597,7 @@ clippy.show()
 | `display_bounds()` | `(x, y, w, h)` work area of the display the pet is on |
 | `set_sprite(path)` | load one PNG, contained and centred; `OSError` if it cannot |
 | `capabilities()` | the dict behind `--capabilities` |
-| `on(event, fn)` | `show`, `hide`, `quit`, `frame`, `click`, `double_click`, `mic`, `configure` |
+| `on(event, fn)` | `show`, `hide`, `quit`, `frame`, `click`, `double_click`, `mic`, `hotkey`, `hotkey_release`, `configure` |
 | `previewing()` | `bool`; on screen only to demonstrate a setting |
 | `settings_open(spec)` | open the settings window on a field schema |
 | `settings_is_open()` / `settings_close()` | is it up; close it |
@@ -582,6 +614,8 @@ clippy.show()
 | `click` | `(x, y, button, clicks)` |
 | `double_click` | `(x, y, button)` |
 | `mic` | `True` when recording started, `False` when it stopped |
+| `hotkey` | the bound chord, as a string |
+| `hotkey_release` | the same, when the key comes back up; never on Windows |
 | `configure` | none; the tray's "Configure..." was chosen |
 
 The window swallows clicks over its whole area, transparent corners included,
@@ -665,6 +699,81 @@ machine with ALSA installed advertises a `default` device with no sound card
 behind it. Finding out for certain would mean opening the device, which is the
 one thing this program must not do behind the user's back — so `start()` is
 where that answer arrives, and it arrives as SDL's own error text.
+
+### Global hotkeys
+
+```python
+clippy.hotkey.available()         # can this platform grab at all
+clippy.hotkey.delivers_release()  # will 'hotkey_release' ever fire
+clippy.hotkey.bind("Ctrl+Alt+G")  # -> "Ctrl+Alt+G"; replaces any previous
+clippy.hotkey.bound()             # the bound chord, or None
+clippy.hotkey.unbind()
+
+clippy.on("hotkey", lambda chord: ...)
+clippy.on("hotkey_release", lambda chord: ...)
+```
+
+A chord that reaches the pet while you are working in something else. This is
+the only input path in the program that does not go through the window, and it
+exists because the window is the problem: the pet is borderless and
+`SDL_WINDOW_UTILITY`, it never holds keyboard focus, and the window manager is
+right not to give it any — so SDL's keyboard events describe only the moments
+when the user had clicked on the pet, which are exactly the moments they did
+not need a shortcut.
+
+There is no portable way to do this. Each platform is a separate API with its
+own opinions, in `src/platform/`, and `src/Hotkey.h` is where the comparison is
+written down:
+
+| | mechanism | press | release |
+|---|---|---|---|
+| X11 | `XGrabKey` on the root window, read back through `SDL_SetX11EventHook` | yes | yes |
+| macOS | Carbon `RegisterEventHotKey` and one application event handler | yes | yes |
+| Windows | `RegisterHotKey`, read back through `SDL_SetWindowsMessageHook` | yes | **no** |
+| Wayland | — | no | no |
+
+**Modifier names** are `Ctrl`, `Alt`, `Shift` and `Super`, case-insensitive, in
+any order, with `Control`, `Option`, `Opt`, `Win`, `Cmd`, `Command` and `Meta`
+accepted as aliases. **Key names are SDL's** — `SDL_GetKeyFromName`'s
+vocabulary rather than a second list of our own to get out of step with it — so
+a letter or digit, `F1` through `F24`, `Space`, `Tab`, `Escape`, `Return`,
+`Backspace`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, or an
+arrow. `bind()` answers with the chord as the host spells it, so `"alt + CTRL+g"`
+comes back `"Ctrl+Alt+G"` and there is one spelling of a chord rather than as
+many as there are config files.
+
+**A chord needs Ctrl, Alt or Super in it.** A global grab takes the key from
+every other application on the desktop, so binding `G` would mean you had
+stopped being able to type g anywhere — and `Shift+G` is the same trick with a
+capital letter. There is no way to offer that which is not a trap, so it is
+refused rather than offered with a warning.
+
+**The two failures are different exceptions**, because only one of them is
+fixed by editing the string. `ValueError` means the chord is wrong: it does not
+parse, the key is not a name, there is no real modifier. `RuntimeError` means
+the chord is fine and cannot be had: something else already owns it, this
+keyboard has no such key, or the platform cannot grab. That second case is the
+one worth the machinery — X11 reports a refused grab asynchronously, so the
+default behaviour is that `XGrabKey` appears to work and the key is simply
+never delivered. `src/platform/HotkeyX11.cpp` brackets the grab with an error
+handler and an `XSync` to turn that into a failure at bind time, naming the
+chord that is already taken.
+
+Two smaller things, both invisible until they are wrong:
+
+*Lock modifiers are part of an X11 grab's mask*, so the chord is grabbed four
+times — plain, with CapsLock, with NumLock, with both. Without that it works
+perfectly until somebody's NumLock is on.
+
+*A release is matched on the key alone.* People let go of Ctrl and Alt first
+and the letter last, so by the time the key comes up the modifiers are usually
+already gone. Matching the release against the full chord would reject most
+real ones, which for a toggle means the next press looks like a repeat and gets
+swallowed.
+
+Only one chord is bound at a time, matching `clippy.on()`'s one hook per event.
+The hook is handed the chord anyway, so that binding several later adds an
+argument rather than changing a signature already in use.
 
 ### The stage
 
@@ -831,6 +940,8 @@ beside it and in the package's `licenses/`.
 | `src/Capabilities.*` | what the platform granted, and why not |
 | `src/AppPaths.*` | exe-relative path resolution |
 | `src/Mic.*` | the recording device: one `SDL_AudioStream`, fixed at 16 kHz mono |
+| `src/Hotkey.*` | global chords: parsing, the queue, and the three platforms compared |
+| `src/platform/Hotkey*.cpp` | one per platform — `XGrabKey`, `RegisterHotKey`, `RegisterEventHotKey`, and a stub that refuses |
 | `src/PyClippy.*` | the `clippy` extension module: host calls and `clippy.mic` |
 | `src/Drawable.*` | transform, tree, alignment, the property system, `Stage` |
 | `src/Sprite.*` `src/Caption.*` | the two drawables |
@@ -876,6 +987,26 @@ delivers the right byte count at the right rate, and `scripts/gobbo/asr.py`
 raises a `silent` event when an open device delivers nothing but zeroes, which
 is what a muted input looks like from in here and is otherwise
 indistinguishable from a transcriber that has stopped working.
+
+**The global hotkey — working on Linux/X11; the grab is checked everywhere, the
+press is not.** Every part of it up to the keypress is in the smoke test —
+parsing, normalising, the refusals, the grab, rebinding, unbinding — so CI
+checks those on all three platforms. The press itself cannot be checked there
+and this is not a gap that can be closed: a global grab is global, so
+exercising it needs a focused desktop with a keyboard on it, and no runner has
+one.
+
+Locally the whole path is verified with synthesised keys through `xdotool`,
+which go through the X server exactly as typed ones do: repeated taps, a key
+held down for a second arriving as one press and one release rather than a
+stream of repeats, the modifiers released before the key, and the chord still
+firing with CapsLock and with NumLock engaged. The already-owned case is
+verified by running two pets and having the second one refuse by name. The
+Windows and macOS backends compile in CI and bind there; nobody has pressed the
+key. For macOS the two things to check first are that `kEventHotKeyReleased`
+actually arrives and that no permission dialog appears — Carbon's
+`RegisterEventHotKey` should need neither Accessibility nor a TCC prompt, which
+is the whole reason it was chosen over a `CGEventTap`.
 
 **Pets and the control channel — working on Linux; the format is checked
 everywhere.** The WebP decoder, and that an undecodable one raises rather than

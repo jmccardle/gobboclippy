@@ -56,4 +56,13 @@ bool fireConfigure();
 // window hid, which is the case the indicator exists for.
 bool fireMic(bool active);
 
+// The bound global chord went down ('hotkey') or came back up
+// ('hotkey_release'). Both are handed the canonical chord, even though only one
+// binding exists at a time -- so that a later bind(chord, name) adds an
+// argument rather than changing the shape of one already in use.
+//
+// Reached from the event loop's drain of Hotkey::drain(), never from the
+// platform hook that queued it; src/Hotkey.h says why that distinction matters.
+bool fireHotkey(bool pressed, const char* chord);
+
 } // namespace PyClippy
