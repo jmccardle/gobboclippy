@@ -61,6 +61,17 @@ contradict what this file used to say:
   `--capabilities` answers two questions, `hotkey` and `hotkey release`, and the
   second is what push-to-talk has to consult.
 
+The settings window can set the chord by listening for it -- the `hotkey` field
+type, with Set and Clear. One more correction to what this file used to say:
+that was noted here as needing nothing new "because the host is already
+grabbing", and a grab is the wrong mechanism for it. A grab observes one
+registered chord; capture has to observe any of them. What makes it work is
+that the settings window *has keyboard focus*, which is the one thing the pet
+never has, so ordinary SDL key events are enough. The grab is still involved,
+but the other way round: capture has to *release* it while listening, because a
+grabbed chord is not delivered to the focused window at all and the chord
+already in the box would otherwise be the one chord impossible to re-choose.
+
 - [ ] **Push to talk.** Hold to record. The key release *is* the endpoint: it
       replaces the accumulator's committed `final` rather than racing it, so
       under PTT there is nothing to project and no half-sentence to send.
@@ -186,8 +197,15 @@ three platforms, the harvested drawing layer has none of the five things a
 dialog is mostly made of, and a desktop pet should not open a browser tab to
 move itself.
 
+Two tabs exist: `WindowSection` (geometry, with a live preview) and
+`HotkeySection` (the chord, captured by pressing it). The second one is
+registered by `scripts/assistant.py` rather than living in `SECTIONS`, because
+`scripts/clippy.py` opens the same window and has no microphone for a chord to
+toggle.
+
 What is left is the rest of the settings. Each is a `Section` subclass, and
-none of them needs C++.
+none of them needs C++ — the hotkey field did, since a chord is a widget rather
+than a value you type, but every item below is a text box or a list.
 
 - [ ] **The transcriber and agent commands.** The two that currently have no
       default and raise with the JSON to write — see `gobbo/config.py`. A text
@@ -199,12 +217,6 @@ none of them needs C++.
       progress state and somewhere for the failure to appear.
 - [ ] **The startup script.** Which of `scripts/` runs, which today is
       `--script` on a command line the user of a packaged build does not have.
-- [ ] **The hotkey chord.** `hotkey.toggle` is config-file only today. A text
-      field is not enough on its own: `clippy.hotkey.bind()` already refuses a
-      malformed chord with a sentence and an owned chord by name, so the useful
-      version binds on Apply and puts that sentence in the dialog rather than
-      saving a chord that will not work. Capturing a chord by pressing it is the
-      nicer affordance and needs nothing new — the host is already grabbing.
 - [ ] **The voice**, once **Speaking** exists, and **push to talk's binding**,
       once that exists.
 - [ ] **`--size` against a saved size.** The flag loses to the config file, and

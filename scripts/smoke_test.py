@@ -409,6 +409,60 @@ else:
         clippy.hotkey.unbind()
         clippy.log("PASS  unbind() is idempotent")
 
+# --- parse(), and the settings window's chord field --------------------------
+# parse() is the validation with nothing attached, which is what lets the
+# settings dialog check a chord out of a config file and put the answer in its
+# own help text instead of being refused the window that would fix it.
+
+check("parse() normalises", clippy.hotkey.parse("alt + CTRL+g"), "Ctrl+Alt+G")
+check("parse() is idempotent", clippy.hotkey.parse("Ctrl+Alt+G"), "Ctrl+Alt+G")
+for bad in ("", "G", "Shift+G", "Ctrl+Alt+Wobble", "Ctrl++G"):
+    try:
+        clippy.hotkey.parse(bad)
+        FAILURES.append(f"parse() accepted {bad!r}")
+    except ValueError:
+        pass
+clippy.log("PASS  parse() refuses what bind() would refuse")
+check("parse() binds nothing", clippy.hotkey.bound(), None)
+
+# A 'hotkey' field holds a chord, and an unbindable one has no business being
+# shown as the current setting -- so the schema is refused rather than rendered.
+# None and "" are the honest empty: nothing bound.
+for value, want in ((None, ""), ("", ""), ("ctrl+alt+j", "Ctrl+Alt+J")):
+    clippy.settings_open({"fields": [
+        {"key": "hk.chord", "label": "Chord", "type": "hotkey", "value": value}]})
+    check(f"a hotkey field given {value!r} shows {want!r}",
+          clippy.settings_get("hk.chord"), want)
+    clippy.settings_close()
+
+try:
+    clippy.settings_open({"fields": [
+        {"key": "hk.chord", "label": "Chord", "type": "hotkey",
+         "value": "Shift+G"}]})
+except ValueError:
+    clippy.log("PASS  a hotkey field refuses an unbindable value")
+else:
+    FAILURES.append("a hotkey field accepted an unbindable value")
+    clippy.settings_close()
+
+# settings_set exists so a live handler can move a field the user did not
+# touch. A chord has no such linkage, and allowing it would be the one way to
+# get an unvalidated chord into the box, so the field is not writable that way.
+clippy.settings_open({"fields": [
+    {"key": "hk.chord", "label": "Chord", "type": "hotkey",
+     "value": "Ctrl+Alt+J"}]})
+try:
+    clippy.settings_set("hk.chord", "Ctrl+Alt+K")
+    FAILURES.append("settings_set() wrote into a hotkey field")
+except (KeyError, TypeError):
+    clippy.log("PASS  settings_set() refuses a hotkey field")
+check("the chord is unchanged", clippy.settings_get("hk.chord"), "Ctrl+Alt+J")
+clippy.settings_close()
+
+# Pressing the chord is the capture half and is not covered here: it needs a
+# click on Set and a keypress into a focused dialog. Driven by hand with
+# xdotool instead -- see README.md "Status".
+
 # --- geometry --------------------------------------------------------------
 w, h = clippy.size()
 check("window is square", w, h)

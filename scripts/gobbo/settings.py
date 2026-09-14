@@ -58,6 +58,16 @@ class Section:
     def changed(self, key, value):
         """A live field was edited. Do it now, so the user can see it."""
 
+    def apply(self, values):
+        """About to save. Return None, or a message to show instead of saving.
+
+        For a section whose settings do something to the running program rather
+        than only sit in a file. It runs *before* the write, so a setting that
+        cannot be made to work is not written down as though it had been --
+        which is the failure worth avoiding here, because the file is what the
+        next launch believes.
+        """
+
     def store(self, cfg, values):
         """Fold the edited values into ``cfg``, which is about to be written."""
 
@@ -229,7 +239,108 @@ class WindowSection(Section):
         clippy.set_position(x, y)
 
 
+# Ctrl+Alt+G is free on GNOME, KDE and Xfce out of the box. A default is right
+# here, unlike the transcriber and agent commands: which chord to use is a
+# preference rather than something only the user can know, and a wrong guess
+# costs a line in a config file instead of a pet that never answers.
+HOTKEY_DEFAULT = "Ctrl+Alt+G"
+
+
+class HotkeySection(Section):
+    """The chord that toggles listening.
+
+    Not in :data:`SECTIONS` by default, and registered by
+    :func:`add_section` from whichever script actually binds a hotkey --
+    ``scripts/assistant.py`` today. ``scripts/clippy.py`` opens the same window
+    and has no microphone, so a chord field there would be a setting that does
+    nothing, which is worse than an absent tab.
+
+    The field is offered even where the platform cannot grab. Capture still
+    works -- the dialog has keyboard focus, which is exactly what the pet never
+    has -- so the chord can be chosen and saved, and would take effect under
+    X11. The help text says that it will not take effect here.
+    """
+
+    tab = "Listening"
+    prefix = "hotkey"
+
+    def fields(self, cfg):
+        saved = (cfg.get("hotkey") or {}).get("toggle", HOTKEY_DEFAULT)
+
+        help_text = ("Press Set, then the chord you want. It needs Ctrl, Alt "
+                     "or Super in it: a global shortcut takes that key from "
+                     "every other application, so a bare one would stop you "
+                     "typing it anywhere.")
+
+        # A chord out of the file is checked here rather than by the host,
+        # because the host refuses a schema it cannot render and that would
+        # mean a hand-edited typo locking you out of the window that fixes it.
+        # Reported in the help text and the log, not swallowed.
+        try:
+            saved = clippy.hotkey.parse(saved) if saved else ""
+        except ValueError as e:
+            clippy.log(f"! {config.path()}: hotkey.toggle {saved!r} is not a "
+                       f"usable chord ({e})")
+            help_text = (f"The saved chord {saved!r} is not usable, so nothing "
+                         f"is bound. Press Set to choose one. ") + help_text
+            saved = ""
+
+        if not clippy.hotkey.available():
+            help_text += (" This desktop cannot grab a global key, so a chord "
+                          "set here is saved but not active -- see "
+                          "--capabilities.")
+
+        return [{
+            "tab": self.tab,
+            "key": "hotkey.toggle",
+            "label": "Toggle listening",
+            "type": "hotkey",
+            "value": saved,
+            "help": help_text,
+        }]
+
+    def apply(self, values):
+        """Take the chord before saving it, so an unusable one is not written.
+
+        No bookkeeping of what is currently bound: ``bind()`` replaces whatever
+        is there and re-binding the same chord is a no-op that still succeeds,
+        so asking for the value in the box is always the right request.
+        """
+        chord = values["hotkey.toggle"]
+
+        if not chord:
+            clippy.hotkey.unbind()
+            return None
+
+        if not clippy.hotkey.available():
+            return None       # saved for a desktop that can; the help text says so
+
+        try:
+            clippy.hotkey.bind(chord)
+        except (ValueError, RuntimeError) as e:
+            return str(e)
+        return None
+
+    def store(self, cfg, values):
+        chord = values["hotkey.toggle"]
+        # null rather than "" for nothing bound, because that is what the
+        # config reader's default already means and what README documents.
+        cfg.setdefault("hotkey", {})["toggle"] = chord or None
+
+
 SECTIONS = [WindowSection()]
+
+
+def add_section(section):
+    """Give the settings window another tab, from a script rather than a file.
+
+    For a section only some scripts should offer. Adding the same class twice
+    is refused rather than shown twice, since a startup script that gets run
+    again in one process would otherwise duplicate its own tab.
+    """
+    if any(type(s) is type(section) for s in SECTIONS):
+        return
+    SECTIONS.append(section)
 
 
 # --- reading the saved geometry back -----------------------------------------
@@ -293,6 +404,14 @@ def _apply(values):
     The host only calls this when something actually changed, so reaching here
     means there is a file to write.
     """
+    # Before the write, and stopping at the first complaint: a section whose
+    # setting could not be made to work must not have it written down as
+    # though it had been.
+    for section in SECTIONS:
+        problem = section.apply(values)
+        if problem:
+            return problem
+
     try:
         cfg = config.load()
         for section in SECTIONS:

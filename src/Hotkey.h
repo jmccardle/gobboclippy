@@ -75,6 +75,18 @@ struct Chord {
 // offered.
 bool parse(const std::string& text, Chord& out, std::string& error_out);
 
+// The same chord, built from what SDL reported for a key press rather than from
+// a string. This is what the settings window's "press the chord you want"
+// capture uses, and it deliberately shares parse()'s rules and spelling: a
+// chord typed into a config file and a chord pressed into the dialog have to be
+// the same chord or the dialog is lying about what it saved.
+bool fromKey(SDL_Keycode key, SDL_Keymod mods, Chord& out, std::string& error_out);
+
+// Whether a keycode is a modifier rather than something that can be a chord's
+// key. Capture needs this: pressing Ctrl+Alt+G is five events, and only one of
+// them completes a chord.
+bool isModifierKey(SDL_Keycode key);
+
 // The window whose native handle the backends need. Called once, after the
 // window exists; nothing here works before it. Also records which thread this
 // is -- see onMainThread().

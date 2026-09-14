@@ -416,17 +416,38 @@ bool settingsField(PyObject* d, Settings::Field& f)
                 if (f.choices[i] == utf8) { f.choice_index = (int)i; break; }
             }
         }
-    } else if (type == "text") {
-        f.kind = Settings::Field::Kind::Text;
+    } else if (type == "text" || type == "hotkey") {
+        f.kind = type == "hotkey" ? Settings::Field::Kind::Hotkey
+                                  : Settings::Field::Kind::Text;
         if (value && value != Py_None) {
             const char* utf8 = PyUnicode_AsUTF8(value);
             if (!utf8) return false;
             f.text_value = utf8;
         }
+
+        // A hotkey field's value is a chord, and a chord the host would refuse
+        // to bind has no business being shown as the current setting. None or
+        // "" is the honest empty -- nothing bound -- and anything else has to
+        // parse, so a hand-edited config file says so when the window opens
+        // rather than when the key is next pressed.
+        if (f.kind == Settings::Field::Kind::Hotkey && !f.text_value.empty()) {
+            Hotkey::Chord chord;
+            std::string err;
+            if (!Hotkey::parse(f.text_value, chord, err)) {
+                PyErr_Format(PyExc_ValueError,
+                             "clippy.settings_open(): field '%s' is a hotkey "
+                             "whose value does not parse: %s",
+                             f.key.c_str(), err.c_str());
+                return false;
+            }
+            // Stored as the host spells it, so the box and bound() agree.
+            f.text_value = chord.canonical;
+        }
     } else {
         PyErr_Format(PyExc_ValueError,
                      "clippy.settings_open(): field '%s' has unknown type '%s' "
-                     "(expected 'int', 'range', 'text', 'bool' or 'choice')",
+                     "(expected 'int', 'range', 'text', 'bool', 'choice' or "
+                     "'hotkey')",
                      f.key.c_str(), type.c_str());
         return false;
     }
@@ -446,6 +467,7 @@ PyObject* settingsValue(const Settings::Field& f)
             return PyUnicode_FromString(f.choices[(size_t)f.choice_index].c_str());
         Py_RETURN_NONE;
     case Settings::Field::Kind::Text:
+    case Settings::Field::Kind::Hotkey:
     default: return PyUnicode_FromString(f.text_value.c_str());
     }
 }
@@ -911,6 +933,27 @@ PyObject* c_hotkey_unbind(PyObject*, PyObject*)
     Py_RETURN_NONE;
 }
 
+// Validation with nothing attached: no window, no grab, no platform asked.
+//
+// This exists for the settings window. A chord comes out of a config file a
+// person may have hand-edited, and the dialog is the thing that repairs such a
+// file -- so it has to be able to ask "is this spellable?" and put the answer
+// in its own help text, rather than passing a bad value to settings_open() and
+// being refused the window it needed in order to fix it.
+PyObject* c_hotkey_parse(PyObject*, PyObject* args)
+{
+    const char* text = nullptr;
+    if (!PyArg_ParseTuple(args, "s:parse", &text)) return nullptr;
+
+    Hotkey::Chord chord;
+    std::string err;
+    if (!Hotkey::parse(text, chord, err)) {
+        PyErr_SetString(PyExc_ValueError, err.c_str());
+        return nullptr;
+    }
+    return PyUnicode_FromString(chord.canonical.c_str());
+}
+
 PyObject* c_hotkey_bound(PyObject*, PyObject*)
 {
     const Hotkey::Chord* c = Hotkey::bound();
@@ -953,6 +996,12 @@ PyMethodDef kHotkeyMethods[] = {
     // the deadlock written out.
     {"bound",     c_hotkey_bound,     METH_NOARGS,
      "bound() -> the bound chord, or None."},
+    {"parse",     c_hotkey_parse,     METH_VARARGS,
+     "parse(chord) -> the chord as the host spells it, without binding it.\n"
+     "Raises ValueError with the reason if it will not do. Grabs nothing and\n"
+     "needs no window, so it answers the same on every platform -- it is how a\n"
+     "caller checks a chord out of a config file before putting it in front of\n"
+     "someone."},
     {nullptr, nullptr, 0, nullptr}
 };
 
@@ -999,8 +1048,11 @@ PyMethodDef kMethods[] = {
      "spec is a dict: title, fields (a list of field dicts), and the\n"
      "callbacks on_change(key, value), on_apply(values) -> None | error\n"
      "string, on_cancel() and on_close(). A field dict is key, label, tab,\n"
-     "help, type ('int', 'text', 'bool' or 'choice'), value, live, and\n"
-     "min/max or choices for the types that take them."},
+     "help, type ('int', 'range', 'text', 'bool', 'choice' or 'hotkey'),\n"
+     "value, live, and min/max or choices for the types that take them.\n"
+     "A 'hotkey' field is a chord with Set and Clear: the host captures the\n"
+     "keypress, validates it and hands back its own spelling, and its value\n"
+     "is '' for nothing bound. Binding it is the script's to do on apply."},
     {"previewing",   c_previewing,   METH_NOARGS,
      "True while the pet is on screen only to demonstrate a setting.\n"
      "visible() is False at the same time, and both are true answers: the\n"

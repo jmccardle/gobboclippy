@@ -33,12 +33,6 @@ from gobbo import accumulate, asr, config, settings, tau
 
 WINDOW = (360, 420)
 
-# A default is right here, unlike the transcriber and agent commands: which
-# chord to use is a preference rather than something only the user can know,
-# and a wrong guess costs a line in a config file instead of a pet that never
-# answers. Ctrl+Alt+G is not owned by GNOME, KDE or Xfce out of the box.
-HOTKEY_DEFAULT = "Ctrl+Alt+G"
-
 INK = (28, 33, 42)
 PAPER = (238, 242, 248)
 SLATE = (150, 160, 175)
@@ -306,7 +300,9 @@ def bind_hotkey(me):
 
     * Nothing configured (``hotkey.toggle`` set to null). Nothing to do.
     """
-    chord = config.setting("hotkey", "toggle", HOTKEY_DEFAULT)
+    # The default lives in gobbo/settings.py, with the field that edits it, so
+    # the dialog and the startup path cannot disagree about what "unset" means.
+    chord = config.setting("hotkey", "toggle", settings.HOTKEY_DEFAULT)
     if not chord:
         return None
 
@@ -351,6 +347,10 @@ def main():
     clippy.on("mic", me.on_mic)
     clippy.on("quit", me.shutdown)
     clippy.on("configure", settings.open)
+
+    # The chord is this script's setting, so the tab that edits it is added
+    # here rather than being in every pet's settings window.
+    settings.add_section(settings.HotkeySection())
 
     chord = bind_hotkey(me)
 

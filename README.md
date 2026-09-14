@@ -366,7 +366,7 @@ clippy.settings_open({
 })
 ```
 
-`type` is `int`, `range`, `text`, `bool` or `choice`.
+`type` is `int`, `range`, `text`, `bool`, `choice` or `hotkey`.
 
 A **`range`** is an int that has to have bounds, drawn as a slider with the
 number in a box beside it — the slider is the coarse control, the box is the
@@ -382,6 +382,43 @@ A **`choice`** carries `choices` and crosses the boundary as the chosen string,
 never as an index, so reordering the list cannot silently change what a config
 file means. An unknown type is refused at the door rather than drawn as
 something else.
+
+A **`hotkey`** is a chord with **Set** and **Clear** beside it. Press Set and
+the field listens; press the chord and it holds it, spelled the host's way. Its
+value is `""` for nothing bound, and a value that would not bind is refused
+with the schema rather than shown as the current setting — so a `hotkey` field
+always displays something that works.
+
+It is a kind of its own rather than a text box you type `Ctrl+Alt+G` into,
+because pressing the chord is the only way to find out whether you *can* press
+it: half the plausible ones are already taken by the desktop, and a box you
+type into cannot tell you that. Three things fall out of capture that are worth
+knowing:
+
+- **The chord you already have is capturable.** Capture releases the current
+  grab for as long as it is listening and takes it back after. Without that,
+  the one chord guaranteed not to work would be the one already in the box — a
+  grabbed chord is not delivered to the focused window at all, so pressing it
+  would have triggered the pet instead of being captured.
+- **A chord you cannot capture is a chord you cannot bind.** If the desktop
+  owns `Super+L`, pressing it during capture does nothing, because the desktop
+  took it before this program could see it. That is the same reason `bind()`
+  would refuse it, so the field quietly filters itself down to chords that
+  would actually work.
+- **A refused chord keeps the field listening**, with the reason under it. You
+  pressed something; being told why it will not do and then having to click Set
+  again would be a dialog arguing rather than helping.
+
+Capture needs no global grab of its own and works even where
+`clippy.hotkey.available()` is false — the dialog has keyboard focus, which is
+exactly what the pet never has. On such a desktop the chord is saved and simply
+not active, and the field's help text says so.
+
+`clippy.hotkey.parse(chord)` is the matching primitive: it returns the host's
+spelling or raises `ValueError`, grabbing nothing. That is what lets
+`gobbo/settings.py` check a chord out of the config file and put the complaint
+in its own help text — the alternative was handing a hand-edited typo to
+`settings_open()` and being refused the window that exists to fix it.
 
 `settings_set()` moves a field the user did not touch, which is what a linked
 pair needs. It deliberately does **not** fire `on_change` — the host was *told*
@@ -403,8 +440,9 @@ only the keys its sections own, and writes through a temporary file in the same
 directory. A transcriber command this dialog has never heard of survives it.
 
 A **section** is the unit of extension: a class that says which fields it
-contributes, what a live edit does right now, and how to fold the values back
-into the config. `WindowSection` is the first one, and writes:
+contributes, what a live edit does right now, whether the values can be made to
+work, and how to fold them back into the config. `WindowSection` is the first
+one, and writes:
 
 ```json
 { "window": { "x": 1612, "y": 580, "width": 300, "height": 380,
@@ -433,6 +471,21 @@ Both shipped scripts apply that at startup and fall back to their own placement
 when the file says nothing — a default for somebody who has never expressed a
 preference, which is not the same as a fallback around an error. A config file
 that exists and does not parse still raises.
+
+`HotkeySection` is the second, and is **not** in `SECTIONS` by default —
+`scripts/assistant.py` registers it with `settings.add_section()`. It is the
+only tab whose absence is a feature: `scripts/clippy.py` opens the same window
+and has no microphone, so a chord field there would be a setting that does
+nothing, which is worse than a missing tab. It writes `{"hotkey": {"toggle":
+"Ctrl+Alt+G"}}`, with `null` for nothing bound.
+
+Its `apply` is why sections have that verb at all. It takes the chord *before*
+the file is written, so a chord another application owns comes back as a
+message in the dialog and nothing is saved — the failure worth avoiding being a
+config file that records a shortcut which has never worked, since the file is
+what the next launch believes. A section that returns a message stops the write
+for every section, which is the right coupling: the file is written once, so it
+is either written correctly or not written.
 
 #### The geometry preview
 
@@ -708,6 +761,7 @@ clippy.hotkey.delivers_release()  # will 'hotkey_release' ever fire
 clippy.hotkey.bind("Ctrl+Alt+G")  # -> "Ctrl+Alt+G"; replaces any previous
 clippy.hotkey.bound()             # the bound chord, or None
 clippy.hotkey.unbind()
+clippy.hotkey.parse("ctrl+alt+g")  # -> "Ctrl+Alt+G"; validates, grabs nothing
 
 clippy.on("hotkey", lambda chord: ...)
 clippy.on("hotkey_release", lambda chord: ...)
@@ -774,6 +828,20 @@ swallowed.
 Only one chord is bound at a time, matching `clippy.on()`'s one hook per event.
 The hook is handed the chord anyway, so that binding several later adds an
 argument rather than changing a signature already in use.
+
+`bind()` and `unbind()` are main-thread only and say so when they are not.
+`clippy.mic.read()` is safe from a worker thread and this deliberately is not:
+a lock here would invert against the one Xlib takes for itself — the main
+thread holds the display lock inside `XNextEvent` and then calls our hook,
+which wants the queue, while a second thread holding the queue waits on the
+display. Binding a chord is setup rather than work, so refusing off-thread
+loses nothing; a worker that wants to rebind hands the chord to the `frame`
+hook. `parse()` has no such rule, because it asks nothing of the platform.
+
+The settings window can capture a chord by listening for it — see
+[Settings](#settings) for the `hotkey` field type, which is where the
+interesting constraint lives: a grabbed chord is not delivered to the focused
+window, so capture has to release the current grab while it listens.
 
 ### The stage
 
@@ -1007,6 +1075,17 @@ key. For macOS the two things to check first are that `kEventHotKeyReleased`
 actually arrives and that no permission dialog appears — Carbon's
 `RegisterEventHotKey` should need neither Accessibility nor a TCC prompt, which
 is the whole reason it was chosen over a `CGEventTap`.
+
+The settings window's chord capture is verified the same way, by driving the
+real dialog with synthesised clicks and keys: Set starts it listening, the
+chord that is *already grabbed* is captured rather than triggering the pet, a
+chord with no real modifier is refused with the reason and the field keeps
+listening, Escape cancels without changing the value, Clear empties it, and the
+borrowed grab is back afterwards — checked by pressing it and watching the pet
+respond again. Saving through `HotkeySection` writes the chord, binds the new
+one and releases the old one. What CI covers is the field type rather than the
+capture: the schema, the spelling it hands back, its refusal of an unbindable
+value, and that `settings_set()` cannot write into it.
 
 **Pets and the control channel — working on Linux; the format is checked
 everywhere.** The WebP decoder, and that an undecodable one raises rather than

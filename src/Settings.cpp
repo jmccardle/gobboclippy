@@ -1,6 +1,7 @@
 #include "Settings.h"
 
 #include "AppPaths.h"
+#include "Hotkey.h"
 
 #include <algorithm>
 
@@ -45,6 +46,30 @@ struct State {
     bool                     banner = false;
     bool                     closing = false;
 
+    // --- hotkey capture ---
+    //
+    // The key of the Hotkey field currently listening, empty when none is.
+    // Only one at a time: capture takes the keyboard for the whole dialog, so
+    // two fields listening at once would be two fields getting the same chord.
+    std::string capturing;
+
+    // Why the last chord pressed was refused. Shown next to the field while
+    // capture stays open, because "that one will not work" is only useful if
+    // you can immediately try another.
+    std::string capture_error;
+
+    // The chord that was globally bound when capture started, released for the
+    // duration and re-grabbed after.
+    //
+    // This is the whole reason capture needs cooperation from Hotkey rather
+    // than just reading key events. A grabbed chord does not arrive as a key
+    // event at all: X11 redirects it to the grabbing client and Windows
+    // consumes it in RegisterHotKey, so the focused window never sees it. With
+    // the grab still in place, pressing the chord you already have would
+    // trigger the pet instead of being captured -- the one chord guaranteed to
+    // be uncapturable would be the one already in the box.
+    std::string capture_restore;
+
     std::function<void()> on_preview_show;
 };
 
@@ -65,6 +90,7 @@ std::string valueOf(const Field& f)
             return f.choices[(size_t)f.choice_index];
         return std::string();
     case Field::Kind::Text:
+    case Field::Kind::Hotkey:
     default:                  return f.text_value;
     }
 }
@@ -201,6 +227,122 @@ bool drawRange(Field& f)
     return typing;
 }
 
+// --- hotkey capture ---------------------------------------------------------
+
+void endCapture()
+{
+    if (g.capturing.empty()) return;
+    g.capturing.clear();
+    g.capture_error.clear();
+
+    if (g.capture_restore.empty()) return;
+
+    // Put back the grab capture borrowed. A chord that was ours a moment ago
+    // and is not available now means something else took it in between, which
+    // is worth a line in the log and is not worth interrupting the dialog for
+    // -- the field still holds whatever the user chose, and Apply is where a
+    // binding failure has somewhere to be reported.
+    Hotkey::Chord chord;
+    std::string err;
+    if (!Hotkey::parse(g.capture_restore, chord, err) ||
+        !Hotkey::bind(chord, err)) {
+        SDL_Log("[settings] could not take %s back after capture: %s",
+                g.capture_restore.c_str(), err.c_str());
+    }
+    g.capture_restore.clear();
+}
+
+void beginCapture(const std::string& key)
+{
+    endCapture();
+    g.capturing = key;
+
+    if (const Hotkey::Chord* bound = Hotkey::bound()) {
+        g.capture_restore = bound->canonical;
+        Hotkey::unbind();
+    }
+}
+
+// The listening half of a Hotkey field: a key press while capture is open.
+// Returns whether the event was consumed.
+//
+// Modifiers alone are not refused, they are ignored -- pressing Ctrl on the way
+// to Ctrl+Alt+G is not a mistake to report, it is the user halfway through. A
+// bare Escape cancels; Escape with modifiers is a chord like any other, which
+// is unambiguous because the cancel case is the one with nothing held.
+bool captureKey(const SDL_KeyboardEvent& k)
+{
+    if (Hotkey::isModifierKey(k.key)) return true;
+
+    if (k.key == SDLK_ESCAPE &&
+        !(k.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI))) {
+        endCapture();
+        return true;
+    }
+
+    Hotkey::Chord chord;
+    std::string err;
+    if (!Hotkey::fromKey(k.key, (SDL_Keymod)k.mod, chord, err)) {
+        // Stay listening. The user pressed something; telling them why it will
+        // not do and then making them click Set again would be a dialog
+        // arguing rather than helping.
+        g.capture_error = err;
+        return true;
+    }
+
+    for (Field& f : g.fields) {
+        if (f.key == g.capturing) { f.text_value = chord.canonical; break; }
+    }
+    endCapture();
+    return true;
+}
+
+void drawHotkey(Field& f)
+{
+    const bool listening = (g.capturing == f.key);
+
+    // The chord sits in a disabled input rather than as text, so it lines up
+    // with every other field's box and reads as the field's value rather than
+    // as a label.
+    const float buttons = kButtonW * 2.0f + ImGui::GetStyle().ItemSpacing.x * 2.0f;
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - buttons);
+
+    std::string shown = listening
+        ? std::string("press a chord...")
+        : (f.text_value.empty() ? std::string("(none)") : f.text_value);
+
+    ImGui::BeginDisabled(true);
+    ImGui::InputText("##chord", &shown, ImGuiInputTextFlags_ReadOnly);
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (listening) {
+        if (ImGui::Button("Cancel", ImVec2(kButtonW, 0))) endCapture();
+    } else if (ImGui::Button("Set", ImVec2(kButtonW, 0))) {
+        beginCapture(f.key);
+    }
+
+    ImGui::SameLine();
+    ImGui::BeginDisabled(f.text_value.empty());
+    if (ImGui::Button("Clear", ImVec2(kButtonW, 0))) {
+        f.text_value.clear();
+        endCapture();
+    }
+    ImGui::EndDisabled();
+
+    if (listening) {
+        ImGui::Indent(kLabelWidth);
+        if (g.capture_error.empty()) {
+            ImGui::TextDisabled("Esc to cancel. Needs Ctrl, Alt or Super.");
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.65f, 0.25f, 1.0f));
+            ImGui::TextWrapped("%s", g.capture_error.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::Unindent(kLabelWidth);
+    }
+}
+
 // Draw one field and say whether the user is still inside it. A value being
 // typed is not an edit yet -- see reportChanges().
 bool drawField(Field& f)
@@ -243,6 +385,11 @@ bool drawField(Field& f)
             ImGui::EndCombo();
         }
         break;
+    }
+    case Field::Kind::Hotkey: {
+        drawHotkey(f);
+        ImGui::PopID();
+        return false;      // never "being typed in"; there is nothing to type
     }
     case Field::Kind::Text:
     default:
@@ -450,6 +597,10 @@ bool setText(const std::string& key, const std::string& value)
 {
     size_t i = 0;
     Field* f = g_open ? findMutable(key, &i) : nullptr;
+    // Text only, not Hotkey. settings_set() exists so a live handler can move
+    // a field the user did not touch, and a chord has no such linkage; letting
+    // it through would also be the one way to get an unvalidated chord into a
+    // Hotkey field.
     if (!f || f->kind != Field::Kind::Text) return false;
     f->text_value = value;
     accept(i);
@@ -565,6 +716,10 @@ void close()
 {
     if (!g_open) return;
 
+    // First, because a dialog closed mid-capture must not leave the chord it
+    // borrowed released. endCapture() puts the grab back.
+    endCapture();
+
     // Copied out before teardown clears the spec: the callback is allowed to
     // ask whether the window is open, and by the time it runs it is not.
     std::function<void()> on_close = g.spec.on_close;
@@ -581,6 +736,17 @@ bool handleEvent(const SDL_Event& e)
     if (id != SDL_GetWindowID(g.window)) return false;
 
     ImGui::SetCurrentContext(g.ctx);
+
+    // Capture gets the keyboard before ImGui does, and keeps it: a chord being
+    // pressed into a field is not text being entered anywhere, and letting
+    // ImGui also see it would mean Tab moved the focus and Space pressed a
+    // button while the user was choosing Ctrl+Alt+Space.
+    if (!g.capturing.empty() &&
+        (e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP)) {
+        if (e.type == SDL_EVENT_KEY_DOWN) captureKey(e.key);
+        return true;
+    }
+
     ImGui_ImplSDL3_ProcessEvent(&e);
 
     // The title bar's close button is Cancel. A dialog dismissed by the window

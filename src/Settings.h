@@ -27,7 +27,11 @@ struct Field {
     // Kept a separate kind rather than "an Int that happens to have min/max",
     // because plenty of bounded integers -- a port, a sample rate -- would be
     // absurd as a slider, and the schema should say which is meant.
-    enum class Kind { Int, Range, Text, Bool, Choice };
+    // Hotkey is a Text that holds a chord, drawn as the chord plus Set and
+    // Clear. It is a kind of its own rather than a text box the user types
+    // "Ctrl+Alt+G" into because pressing the chord is the only way to find out
+    // whether you *can* press it -- see drawHotkey() in Settings.cpp.
+    enum class Kind { Int, Range, Text, Bool, Choice, Hotkey };
 
     std::string tab;          // tab to draw it under; "" is the first tab
     std::string key;          // opaque here; the identity Python knows it by
@@ -47,7 +51,8 @@ struct Field {
     long long   int_min   = 0;
     long long   int_max   = 0;
 
-    // Text
+    // Text, and Hotkey -- whose value is a canonical chord, or empty for
+    // "nothing bound".
     std::string text_value;
 
     // Bool

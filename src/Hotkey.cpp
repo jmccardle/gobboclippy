@@ -46,6 +46,14 @@ unsigned modifierNamed(const std::string& word)
     return 0;
 }
 
+// The last two steps of building a chord, shared by parse() and fromKey() so
+// that a chord written into a config file and the same chord pressed into the
+// settings dialog cannot end up meaning different things. `shown` is how to
+// refer to the chord in the refusal, since the two callers have different ideas
+// of what the user just did.
+bool finish(unsigned mods, SDL_Keycode key, const std::string& shown,
+            Hotkey::Chord& out, std::string& error_out);
+
 // One fixed order out, whatever order came in, so a chord has one spelling.
 std::string canonicalise(unsigned mods, SDL_Keycode key)
 {
@@ -58,6 +66,25 @@ std::string canonicalise(unsigned mods, SDL_Keycode key)
     const char* name = SDL_GetKeyName(key);
     out += (name && *name) ? name : "?";
     return out;
+}
+
+bool finish(unsigned mods, SDL_Keycode key, const std::string& shown,
+            Hotkey::Chord& out, std::string& error_out)
+{
+    // A grab with no real modifier takes the key away from the whole desktop,
+    // and Shift on its own is the same thing wearing a hat. See the header.
+    if (!(mods & (Hotkey::kCtrl | Hotkey::kAlt | Hotkey::kSuper))) {
+        error_out = "'" + shown + "' needs Ctrl, Alt or Super in it. A global "
+                    "grab takes the key from every other application, so a "
+                    "bare key -- or Shift and a key -- would stop you typing "
+                    "it anywhere.";
+        return false;
+    }
+
+    out.mods      = mods;
+    out.key       = key;
+    out.canonical = canonicalise(mods, key);
+    return true;
 }
 
 } // namespace
@@ -123,19 +150,49 @@ bool parse(const std::string& text, Chord& out, std::string& error_out)
         return false;
     }
 
-    // See the header: a grab with no real modifier takes the key away from the
-    // whole desktop, and Shift on its own is the same thing wearing a hat.
-    if (!(c.mods & (kCtrl | kAlt | kSuper))) {
-        error_out = "'" + whole + "' needs Ctrl, Alt or Super in it. A global "
-                    "grab takes the key from every other application, so a "
-                    "bare key -- or Shift and a key -- would stop you typing "
-                    "it anywhere.";
+    return finish(c.mods, c.key, whole, out, error_out);
+}
+
+bool isModifierKey(SDL_Keycode key)
+{
+    switch (key) {
+    case SDLK_LCTRL:  case SDLK_RCTRL:
+    case SDLK_LSHIFT: case SDLK_RSHIFT:
+    case SDLK_LALT:   case SDLK_RALT:
+    case SDLK_LGUI:   case SDLK_RGUI:
+    case SDLK_MODE:
+    // The lock keys are not chord material either, and for a second reason:
+    // they are the ones an X11 grab has to ignore to work at all.
+    case SDLK_CAPSLOCK: case SDLK_NUMLOCKCLEAR: case SDLK_SCROLLLOCK:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool fromKey(SDL_Keycode key, SDL_Keymod mods, Chord& out, std::string& error_out)
+{
+    if (isModifierKey(key)) {
+        // Not reachable from the settings window, which filters these out so it
+        // can keep waiting rather than refusing. Answered properly anyway,
+        // because a caller that did not filter deserves the reason.
+        error_out = std::string("'") + SDL_GetKeyName(key) +
+                    "' is a modifier, not a key. A chord needs one key with "
+                    "the modifiers held alongside it.";
         return false;
     }
 
-    c.canonical = canonicalise(c.mods, c.key);
-    out = c;
-    return true;
+    unsigned ours = 0;
+    if (mods & SDL_KMOD_CTRL)  ours |= kCtrl;
+    if (mods & SDL_KMOD_ALT)   ours |= kAlt;
+    if (mods & SDL_KMOD_SHIFT) ours |= kShift;
+    if (mods & SDL_KMOD_GUI)   ours |= kSuper;
+
+    // CapsLock and NumLock are in `mods` and are deliberately not translated:
+    // they are state rather than modifiers being held, an X11 grab has to
+    // ignore them, and a chord that came out different because CapsLock was on
+    // would be a chord the user cannot type again on purpose.
+    return finish(ours, key, canonicalise(ours, key), out, error_out);
 }
 
 void attach(SDL_Window* window)
