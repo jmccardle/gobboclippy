@@ -14,8 +14,7 @@ a change of mind that should be argued for.
 Items point at the prose that explains them rather than restating it. The
 explanations live in `README.md` and `docs/harvest.md` and should stay there.
 
-**Where this stands.** v0.5.0 is tagged and released; a global hotkey has landed
-since. The base is done: window, transparency, tray, the harvested drawing
+**Where this stands.** v0.6.0 is tagged and released. The base is done: window, transparency, tray, the harvested drawing
 layer, the effect compositor, the bundled interpreter and a relocatable package
 on three platforms; a microphone; a global chord that reaches the pet without
 focus; petdex pets in nine states; a control channel and a τ extension that
