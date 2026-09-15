@@ -1,6 +1,6 @@
 """gobboclippy, listening.
 
-Double-click the pet, or press Ctrl+Alt+G from anywhere, to toggle the
+Press Ctrl+Alt+G from anywhere, or double-click the pet, to toggle the
 microphone. What it hears goes to a transcriber; committed utterances go to the
 agent; the answer is drawn on the window.
 
@@ -9,6 +9,10 @@ focus and is usually behind whatever you are working in, so "double-click the
 pet" means finding it first, which is the wrong amount of effort for saying one
 sentence. It is the ``hotkey.toggle`` key in the config file; setting it to
 null binds nothing and leaves the double-click as the only way in.
+
+So the chord does the whole gesture, not just the microphone: it brings the pet
+out, listens, and puts it away again when you press it a second time. A pet you
+already had on screen stays there -- see Assistant.toggle_by_chord().
 
 Run it with:
 
@@ -122,6 +126,10 @@ class Assistant:
         self.agent = None
         self.listening = False      # the worker has loaded and is ready
 
+        # The chord put the pet on screen, so the chord takes it away again.
+        # See toggle_by_chord().
+        self.summoned = False
+
         self.body.animate("scale_y", 0.04, 2.6,
                           easing=clippy.Easing.PING_PONG_EASE_IN_OUT,
                           delta=True, loop=True)
@@ -132,6 +140,11 @@ class Assistant:
     # --- the microphone ----------------------------------------------------
 
     def toggle_mic(self, *_):
+        """Start or stop recording. The pet has to be on screen already.
+
+        This is the double-click's handler, where that is a given -- you cannot
+        double-click a window that is not there.
+        """
         if clippy.mic.active():
             clippy.mic.stop()
             return
@@ -140,6 +153,39 @@ class Assistant:
             clippy.mic.start()
         except (RuntimeError, config.Missing) as e:
             self.fail(str(e))
+
+    def toggle_by_chord(self, *_):
+        """The chord summons the pet, listens, and dismisses it again.
+
+        The chord exists for the case where you are working in another window,
+        which is the same case where the pet is usually hidden -- so it has to
+        bring the pet with it. Recording while hidden is refused by the host,
+        and rightly: the visible pet *is* the recording indicator, so there is
+        nothing to fix at that end. The chord has to mean "listen to me", and
+        being on screen is part of what that means.
+
+        Whether the second press hides the pet again depends on who put it
+        there, the same way the settings window's preview does. A pet the chord
+        summoned goes back where it came from; a pet you had on screen anyway
+        stays, because taking it away would be the chord answering a question
+        nobody asked.
+
+        A failed start keeps the pet regardless. The message is on its face,
+        and hiding the window it is written on is how this went wrong in the
+        first place.
+        """
+        if clippy.mic.active():
+            clippy.mic.stop()
+            if self.summoned:
+                self.summoned = False
+                clippy.hide()
+            return
+
+        summoning = not clippy.visible()
+        if summoning:
+            clippy.show()
+        self.toggle_mic()
+        self.summoned = summoning and clippy.mic.active()
 
     def ensure_workers(self):
         """Start the two subprocesses, once, on the first request to listen.
@@ -154,8 +200,13 @@ class Assistant:
             self.set_status("loading the transcriber", SLATE)
 
         if self.agent is None:
-            self.agent = tau.from_config(events)
+            # Both calls inside the try, not just start(): from_config() raises
+            # too -- a build tree with no tau.command has nothing to default to
+            # -- and an agent that cannot be named must fail the same way as an
+            # agent that cannot be launched. Outside the try it took dictation
+            # down with it, which is the opposite of what is said below.
             try:
+                self.agent = tau.from_config(events)
                 self.agent.start()
             except RuntimeError as e:
                 # Transcription is a capability of its own and still works.
@@ -313,7 +364,7 @@ def bind_hotkey(me):
 
     try:
         bound = clippy.hotkey.bind(chord)
-        clippy.log(f"{bound} toggles the microphone")
+        clippy.log(f"{bound} summons the pet and toggles the microphone")
         return bound
     except (ValueError, RuntimeError) as e:
         me.fail(f"could not bind {chord}: {e}\n\n"
@@ -343,7 +394,7 @@ def main():
 
     clippy.on("frame", me.frame)
     clippy.on("double_click", me.toggle_mic)
-    clippy.on("hotkey", me.toggle_mic)
+    clippy.on("hotkey", me.toggle_by_chord)
     clippy.on("mic", me.on_mic)
     clippy.on("quit", me.shutdown)
     clippy.on("configure", settings.open)
@@ -361,7 +412,7 @@ def main():
     if not caps["microphone"]:
         me.fail("no microphone; --capabilities says why")
     elif chord:
-        me.set_status(f"double-click or {chord} to listen", SLATE)
+        me.set_status(f"{chord} or double-click to listen", SLATE)
     else:
         me.set_status("double-click to listen", SLATE)
 

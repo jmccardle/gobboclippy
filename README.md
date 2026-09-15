@@ -236,13 +236,23 @@ resize its children, and that a hidden pet refuses to record:
 ### The assistant
 
 `scripts/assistant.py` is the one that listens. Press **Ctrl+Alt+G** from
-anywhere, or double-click the pet, to toggle the microphone; what it hears goes
-to a transcriber, committed utterances go to an agent, and the answer is drawn
-on the window.
+anywhere and the pet comes out and starts recording; press it again and the
+recording stops and the pet goes away. Double-clicking a pet already on screen
+toggles the microphone without moving it. What it hears goes to a transcriber,
+committed utterances go to an agent, and the answer is drawn on the window.
 
 ```sh
 ./gobboclippy --script scripts/assistant.py
 ```
+
+The chord does the whole gesture rather than only the microphone, because the
+case it exists for — you are working in another window and want to say one
+sentence — is the same case where the pet is hidden, and a hidden pet is not
+allowed to record: the visible pet *is* the recording indicator. Which of the
+two put the pet on screen is remembered, so a pet you had up anyway stays up
+when the recording stops, and a start that fails keeps the pet regardless —
+the message is written on its face, and hiding that would be the bug this
+behaviour replaced.
 
 The chord is the one that matters in practice, and the double-click is the
 fallback rather than the other way round: the pet never holds keyboard focus

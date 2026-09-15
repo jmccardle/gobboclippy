@@ -36,9 +36,10 @@ built from a clean checkout and are unaffected.
 
 ## Hearing
 
-`scripts/assistant.py` is a dictation loop today: the double-click or the global
-chord toggles the microphone, every committed utterance goes to the agent, and
-the reply is drawn on the window.
+`scripts/assistant.py` is a dictation loop today: the global chord summons the
+pet and starts recording (a second press stops and dismisses it), the
+double-click toggles the microphone on a pet already up, every committed
+utterance goes to the agent, and the reply is drawn on the window.
 
 **The pet does not decide whether it was spoken to.** Listening is something the
 user turns on, in one of three ways — two of which now exist, the double-click
@@ -48,9 +49,9 @@ system — see **Cuts**.
 
 **Global input capture is done, and the hotkey toggle with it.** `src/Hotkey.h`
 is the facility and `src/platform/Hotkey*.cpp` the three backends; `Ctrl+Alt+G`
-toggles the microphone in `scripts/assistant.py`, configurable as
-`hotkey.toggle`. Two findings from building it are worth keeping, because both
-contradict what this file used to say:
+summons the pet and toggles the microphone in `scripts/assistant.py`,
+configurable as `hotkey.toggle`. Two findings from building it are worth
+keeping, because both contradict what this file used to say:
 
 * **macOS needs no Accessibility permission and no second TCC prompt.** Carbon's
   `RegisterEventHotKey` registers one chord with the window server. The event
@@ -71,6 +72,21 @@ never has, so ordinary SDL key events are enough. The grab is still involved,
 but the other way round: capture has to *release* it while listening, because a
 grabbed chord is not delivered to the focused window at all and the chord
 already in the box would otherwise be the one chord impossible to re-choose.
+
+**A chord that only toggled the microphone was broken in the one case it was
+built for.** The first cut wired `hotkey` straight to the double-click's
+handler, and the double-click's handler assumes the pet is on screen — which is
+true of a double-click and false of a chord pressed from another window. A
+hidden pet is refused the microphone by design, so the chord raised, and the
+explanation was written on a window nobody could see. So the chord owns the
+whole gesture: summon, record, stop, dismiss, with the pet kept if it was
+already up or if the start failed. That is policy and it lives in
+`scripts/assistant.py` — `clippy.py` has no microphone to summon anything for.
+It is *not* the settings window's preview: a preview is mapped-but-not-`shown`
+and the host refuses to record in that state, correctly, because the visible
+pet is the recording indicator. What carries over is the shape — on screen for
+a reason, gone when the reason ends, kept if the user asked separately — and
+`Assistant.summoned` plays `App::m_preview_engaged`'s part.
 
 - [ ] **Push to talk.** Hold to record. The key release *is* the endpoint: it
       replaces the accumulator's committed `final` rather than racing it, so
