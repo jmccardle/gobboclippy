@@ -21,6 +21,11 @@ focus; petdex pets in nine states; a control channel and a τ extension that
 drives one; a settings window whose fields Python defines. Windows and macOS
 build and smoke-test in CI. There are no TODO markers in the tree.
 
+The v0.6.0 release attaches a Windows `.zip`, a macOS `.dmg` and a Linux
+`.tar.gz`. That is not only distribution: every item under **Verification** is
+waiting on a person with one of those two platforms, and until 0.6.0 there was
+nothing for such a person to download.
+
 Two things are not what they look like. **The Forgejo CI does not run, and never
 will** — that instance has no runner able to build this and one is not coming,
 so every execution fails during setup and always has. The workflow is correct
@@ -61,31 +66,21 @@ keeping, because both contradict what this file used to say:
   `--capabilities` answers two questions, `hotkey` and `hotkey release`, and the
   second is what push-to-talk has to consult.
 
-The settings window can set the chord by listening for it -- the `hotkey` field
-type, with Set and Clear. One more correction to what this file used to say:
-that was noted here as needing nothing new "because the host is already
-grabbing", and a grab is the wrong mechanism for it. A grab observes one
-registered chord; capture has to observe any of them. What makes it work is
-that the settings window *has keyboard focus*, which is the one thing the pet
-never has, so ordinary SDL key events are enough. The grab is still involved,
-but the other way round: capture has to *release* it while listening, because a
-grabbed chord is not delivered to the focused window at all and the chord
-already in the box would otherwise be the one chord impossible to re-choose.
+The settings window sets the chord by listening for it — the `hotkey` field
+type, with Set and Clear. Capture works because the dialog *has keyboard focus*,
+so plain SDL key events are enough; it has to *release* the grab while
+listening, or the chord already in the box would be the one chord impossible to
+re-choose.
 
-**A chord that only toggled the microphone was broken in the one case it was
-built for.** The first cut wired `hotkey` straight to the double-click's
-handler, and the double-click's handler assumes the pet is on screen — which is
-true of a double-click and false of a chord pressed from another window. A
-hidden pet is refused the microphone by design, so the chord raised, and the
-explanation was written on a window nobody could see. So the chord owns the
-whole gesture: summon, record, stop, dismiss, with the pet kept if it was
-already up or if the start failed. That is policy and it lives in
-`scripts/assistant.py` — `clippy.py` has no microphone to summon anything for.
-It is *not* the settings window's preview: a preview is mapped-but-not-`shown`
-and the host refuses to record in that state, correctly, because the visible
-pet is the recording indicator. What carries over is the shape — on screen for
-a reason, gone when the reason ends, kept if the user asked separately — and
-`Assistant.summoned` plays `App::m_preview_engaged`'s part.
+**The chord owns the whole gesture, not just the microphone**: summon, record,
+stop, dismiss, with the pet kept if it was already up or if the start failed.
+That is policy and it lives in `scripts/assistant.py` — `clippy.py` has no
+microphone to summon anything for. It is *not* the settings window's preview,
+and reaching for one would be a regression: a preview is mapped-but-not-`shown`
+and the host refuses to record in that state, correctly, because the visible pet
+*is* the recording indicator. `Assistant.summoned` plays
+`App::m_preview_engaged`'s part. Both of these replaced wrong assumptions this
+file used to carry; the long form is in `.archive/HISTORY.md`.
 
 - [ ] **Push to talk.** Hold to record. The key release *is* the endpoint: it
       replaces the accumulator's committed `final` rather than racing it, so
