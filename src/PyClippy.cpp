@@ -11,6 +11,7 @@
 #include "Drawable.h"
 #include "Hotkey.h"
 #include "Mic.h"
+#include "Speaker.h"
 #include "PyDraw.h"
 #include "Settings.h"
 
@@ -182,7 +183,10 @@ PyObject* c_capabilities(PyObject*, PyObject*)
     }
 
     PyObject* d = Py_BuildValue(
-        "{s:s, s:s, s:O, s:O, s:O, s:O, s:O, s:O, s:O, s:O, s:N, s:N}",
+        // One s:O per bool, and the count has to match the pairs below: a
+        // format short by one silently drops the LAST key, which is how
+        // 'speaker' cost 'notes' its place for one build.
+        "{s:s, s:s, s:O, s:O, s:O, s:O, s:O, s:O, s:O, s:O, s:O, s:N, s:N}",
         "platform",      c.platform.c_str(),
         "video_driver",  c.video_driver.c_str(),
         "borderless",    c.borderless    ? Py_True : Py_False,
@@ -191,6 +195,7 @@ PyObject* c_capabilities(PyObject*, PyObject*)
         "skip_taskbar",  c.skip_taskbar  ? Py_True : Py_False,
         "tray",          c.tray          ? Py_True : Py_False,
         "microphone",    c.microphone    ? Py_True : Py_False,
+        "speaker",       c.speaker       ? Py_True : Py_False,
         "hotkey",        c.hotkey         ? Py_True : Py_False,
         "hotkey_release", c.hotkey_release ? Py_True : Py_False,
         "image_formats", formats,
@@ -878,6 +883,173 @@ PyModuleDef kMicModule = {
     nullptr, nullptr, nullptr, nullptr
 };
 
+// --- clippy.speaker ---------------------------------------------------------
+//
+// The microphone's mirror, and the same division of labour: the host owns the
+// device, the script owns where the samples come from. src/Speaker.h has the
+// two places the mirror is deliberately not symmetrical -- the rate is the
+// voice's rather than pinned, and there is no hidden-window rule, because a
+// sound announces itself and an open microphone does not.
+//
+// Every call here is meant to be safe from the frame hook, which is why
+// clear() exists alongside stop(): interrupting a sentence happens while the
+// user is mid-gesture, and closing a device to do it costs ~100ms of the
+// thread that draws.
+
+PyObject* c_spk_devices(PyObject*, PyObject*)
+{
+    std::string err;
+    const std::vector<Speaker::Device> found = Speaker::devices(err);
+
+    PyObject* list = PyList_New(0);
+    if (!list) return nullptr;
+    for (const auto& d : found) {
+        PyObject* item = Py_BuildValue("(Is)", (unsigned int)d.id, d.name.c_str());
+        if (!item || PyList_Append(list, item) < 0) {
+            Py_XDECREF(item); Py_DECREF(list); return nullptr;
+        }
+        Py_DECREF(item);
+    }
+    return list;
+}
+
+PyObject* c_spk_start(PyObject*, PyObject* args, PyObject* kwds)
+{
+    static const char* kw[] = {"rate", "channels", "device", nullptr};
+    int       rate     = Speaker::kRate;
+    int       channels = Speaker::kChannels;
+    PyObject* dev      = Py_None;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|iiO:start", (char**)kw,
+                                     &rate, &channels, &dev)) {
+        return nullptr;
+    }
+
+    // A nonsense format is a mistake in the script, not a fact about the
+    // machine, so it raises the way a bad argument does rather than joining
+    // the "this desktop cannot" errors below.
+    if (rate <= 0 || channels <= 0) {
+        PyErr_Format(PyExc_ValueError,
+                     "clippy.speaker.start(): rate and channels must both be "
+                     "positive, got rate=%d channels=%d", rate, channels);
+        return nullptr;
+    }
+
+    SDL_AudioDeviceID id = 0;
+    if (dev != Py_None) {
+        const unsigned long v = PyLong_AsUnsignedLong(dev);
+        if (v == (unsigned long)-1 && PyErr_Occurred()) return nullptr;
+        id = (SDL_AudioDeviceID)v;
+    }
+
+    std::string err;
+    if (!Speaker::start(rate, channels, id, err)) {
+        PyErr_SetString(PyExc_RuntimeError, err.c_str());
+        return nullptr;
+    }
+    Py_RETURN_NONE;
+}
+
+PyObject* c_spk_stop(PyObject*, PyObject*)
+{
+    Speaker::stop();
+    Py_RETURN_NONE;
+}
+
+PyObject* c_spk_clear(PyObject*, PyObject*)
+{
+    Speaker::clear();
+    Py_RETURN_NONE;
+}
+
+PyObject* c_spk_active(PyObject*, PyObject*)
+{
+    return PyBool_FromLong(Speaker::active() ? 1 : 0);
+}
+
+PyObject* c_spk_queued(PyObject*, PyObject*)
+{
+    return PyLong_FromLong(Speaker::queued());
+}
+
+PyObject* c_spk_drained(PyObject*, PyObject*)
+{
+    return PyBool_FromLong(Speaker::drained() ? 1 : 0);
+}
+
+PyObject* c_spk_write(PyObject*, PyObject* args)
+{
+    Py_buffer view;
+    if (!PyArg_ParseTuple(args, "y*:write", &view)) return nullptr;
+
+    if (!Speaker::active()) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_RuntimeError,
+                        "clippy.speaker.write(): the device is not open; "
+                        "call clippy.speaker.start() first");
+        return nullptr;
+    }
+
+    // Same reasoning as mic.read(): the writer is a synthesiser's reader
+    // thread, and it should not hold the GIL while it waits on the mutex the
+    // event loop takes to close the device.
+    int wrote = 0;
+    Py_BEGIN_ALLOW_THREADS
+    wrote = Speaker::write(view.buf, (int)view.len);
+    Py_END_ALLOW_THREADS
+    PyBuffer_Release(&view);
+
+    if (wrote < 0) {
+        PyErr_SetString(PyExc_RuntimeError, SDL_GetError());
+        return nullptr;
+    }
+    return PyLong_FromLong(wrote);
+}
+
+PyObject* c_spk_spec(PyObject*, PyObject*)
+{
+    return Py_BuildValue("(iis)", Speaker::kRate, Speaker::kChannels,
+                         Speaker::kFormat);
+}
+
+PyMethodDef kSpeakerMethods[] = {
+    {"devices", c_spk_devices, METH_NOARGS,
+     "devices() -> [(id, name), ...]  Playback devices SDL can see.\n"
+     "Empty both when nothing is connected and when there is no audio stack;\n"
+     "--capabilities prints which, and start() raises with the reason."},
+    {"start",   (PyCFunction)c_spk_start, METH_VARARGS | METH_KEYWORDS,
+     "start(rate=22050, channels=1, device=None) -> open the device.\n"
+     "The rate is the voice's, not the device's: SDL converts. Unlike the\n"
+     "microphone this does not care whether the pet is visible -- a sound\n"
+     "announces itself, so there is nothing for the window to indicate."},
+    {"stop",    c_spk_stop,    METH_NOARGS,
+     "stop() -> close the device, dropping anything still unplayed."},
+    {"clear",   c_spk_clear,   METH_NOARGS,
+     "clear() -> stop talking now, keeping the device open. What interrupting\n"
+     "a sentence wants: reopening a device costs the drawing thread ~100ms."},
+    {"active",  c_spk_active,  METH_NOARGS,  "True while the device is open."},
+    {"write",   c_spk_write,   METH_VARARGS,
+     "write(data) -> int  Queue raw s16le samples at the rate given to\n"
+     "start(). Safe to call from a thread. Raises if the device is closed,\n"
+     "rather than discarding audio nobody will hear."},
+    {"queued",  c_spk_queued,  METH_NOARGS,
+     "Bytes written that the device has not played yet."},
+    {"drained", c_spk_drained, METH_NOARGS,
+     "True when the device is open and has played everything written to it."},
+    {"spec",    c_spk_spec,    METH_NOARGS,
+     "spec() -> (rate, channels, format)  start()'s defaults: (22050, 1, 's16le')."},
+    {nullptr, nullptr, 0, nullptr}
+};
+
+PyModuleDef kSpeakerModule = {
+    PyModuleDef_HEAD_INIT,
+    "clippy.speaker",
+    "The speakers. The host owns the device, the script owns the source.",
+    -1,
+    kSpeakerMethods,
+    nullptr, nullptr, nullptr, nullptr
+};
+
 // --- clippy.hotkey ----------------------------------------------------------
 //
 // A chord the pet hears while the user is working somewhere else. The host owns
@@ -1101,6 +1273,13 @@ PyObject* moduleInit()
     PyObject* mic = PyModule_Create(&kMicModule);
     if (!mic || PyModule_AddObject(m, "mic", mic) < 0) {
         Py_XDECREF(mic);
+        Py_DECREF(m);
+        return nullptr;
+    }
+
+    PyObject* speaker = PyModule_Create(&kSpeakerModule);
+    if (!speaker || PyModule_AddObject(m, "speaker", speaker) < 0) {
+        Py_XDECREF(speaker);
         Py_DECREF(m);
         return nullptr;
     }

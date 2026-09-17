@@ -32,6 +32,11 @@ struct Capabilities {
     bool tray           = false;
     bool microphone     = false;
 
+    // Separate from `microphone` because the two fail separately: a machine
+    // can have speakers and no input, and a headless runner has neither. A
+    // script that is about to start a synthesiser needs to know which.
+    bool speaker        = false;
+
     // Two bits rather than one, because the platforms disagree about the
     // second and the difference decides whether push-to-talk is possible at
     // all: Windows' RegisterHotKey reports the press and has no release
@@ -45,9 +50,9 @@ struct Capabilities {
     // Human-readable degradations, e.g. why always_on_top is false.
     std::vector<std::string> notes;
 
-    // Fill in everything except `tray`, `microphone` and the two hotkey bits,
-    // which the host sets once Tray::create(), Mic::devices() and
-    // Hotkey::attach() have answered.
+    // Fill in everything except `tray`, `microphone`, `speaker` and the two
+    // hotkey bits, which the host sets once Tray::create(), Mic::devices(),
+    // Speaker::devices() and Hotkey::attach() have answered.
     static Capabilities probe(SDL_Window* window, SDL_WindowFlags requested);
 
     std::string report() const;   // multi-line, for --capabilities and the log

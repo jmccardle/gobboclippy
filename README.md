@@ -57,6 +57,7 @@ gobboclippy 0.6.0  (SDL 3.4.16, Python 3.14)
   skip taskbar  : yes
   tray icon     : yes
   microphone    : yes
+  speaker       : yes
   global hotkey : yes
   hotkey release: yes
   image formats : png, webp
@@ -239,7 +240,8 @@ resize its children, and that a hidden pet refuses to record:
 anywhere and the pet comes out and starts recording; press it again and the
 recording stops and the pet goes away. Double-clicking a pet already on screen
 toggles the microphone without moving it. What it hears goes to a transcriber,
-committed utterances go to an agent, and the answer is drawn on the window.
+committed utterances go to an agent, and the answer is drawn on the window —
+and spoken aloud, if a voice is configured.
 
 ```sh
 ./gobboclippy --script scripts/assistant.py
@@ -263,8 +265,8 @@ where the platform cannot grab a global key at all (Wayland) the pet says so in
 the log and carries on with the double-click. See
 [Global hotkeys](#global-hotkeys).
 
-Both of those are **subprocesses speaking one line of JSON at a time**, because
-that is what they already are, and neither is imported:
+All three of those are **subprocesses**, because that is what they already are,
+and none of them is imported:
 
 - the transcriber reads raw `s16le` 16 kHz mono on stdin and writes
   `{"type": "ready"|"partial"|"final", ...}` on stdout. That is the contract of
@@ -273,9 +275,13 @@ that is what they already are, and neither is imported:
   or over the network, is a different program rather than a branch in
   `scripts/gobbo/asr.py`.
 - the agent is `tau --mode rpc`, JSON-RPC 2.0 over stdio.
+- the synthesiser reads a line of text on stdin and writes raw `s16le` mono on
+  stdout, which is `piper --output-raw` exactly. The host owns the playback
+  device, so what comes back goes straight to `clippy.speaker.write()` with
+  nothing in between — see [Speaking](#speaking).
 
-Nothing heavy enters the pet's interpreter, and either end can be replaced by
-anything that speaks the same lines.
+Nothing heavy enters the pet's interpreter, and any of the three can be
+replaced by anything that speaks the same bytes.
 
 Name the transcriber in `config.json` under `clippy.pref_path()`. There is no
 default for it: a guess that happened to be wrong would be a microphone that
@@ -288,11 +294,24 @@ double-click prints the file to write and the JSON to put in it.
     "command": ["/path/to/asr-venv/bin/python",
                 "/path/to/tectum/tectum/audio/streaming_stt_worker.py"]
   },
+  "tts": {
+    "command": ["/path/to/piper-venv/bin/piper",
+                "--model", "/path/to/voices/en_US-amy-medium.onnx",
+                "--output-raw"],
+    "rate": 22050
+  },
   "hotkey": {
     "toggle": "Ctrl+Alt+G"
   }
 }
 ```
+
+The `tts` key is **optional in a way `asr` is not**. With no `tts.command` the
+pet answers on screen and says nothing, which is what it did for its whole life
+before this; the log says so once, and nothing appears on the pet's face,
+because a voice nobody asked for is not a missing dependency. A `tts.command`
+that is named and then will not run *is* a failure and is reported like the
+agent's — on screen, with dictation and the agent still working.
 
 `tau` does have a default — `sys.executable -m tau_coding_agent.cli --mode rpc`,
 which names no path outside the tree because the package ships its own
@@ -763,6 +782,63 @@ behind it. Finding out for certain would mean opening the device, which is the
 one thing this program must not do behind the user's back — so `start()` is
 where that answer arrives, and it arrives as SDL's own error text.
 
+### Speaking
+
+```python
+clippy.speaker.spec()        # start()'s defaults: (22050, 1, "s16le")
+clippy.speaker.devices()     # [(id, name), ...]
+clippy.speaker.start()       # or start(rate=16000, channels=1, device=id)
+clippy.speaker.write(data)   # raw s16le at the rate given to start()
+clippy.speaker.queued()      # bytes written but not played yet
+clippy.speaker.drained()     # open, and everything written has played
+clippy.speaker.active()
+clippy.speaker.stop()        # closes, dropping anything unplayed
+```
+
+The microphone's mirror, down to the mutex: `src/Speaker.cpp` is one
+`SDL_AudioStream`, and `write()` releases the GIL for the same reason `read()`
+does. Two things are deliberately *not* mirrored, and both are the
+microphone's own reasoning run backwards.
+
+**The format is not pinned.** The rate is a property of the voice the
+synthesiser loaded — piper's medium voices are 22050 Hz, its low ones 16000 —
+so it is an argument to `start()`. SDL converts to whatever the device wants,
+which is why handing it the voice's own rate costs nothing; asking the script
+to resample first would be asking it to do SDL's job badly.
+
+**A hidden pet may speak.** `clippy.mic.start()` refuses while the pet is
+hidden because the visible pet *is* the recording indicator, and a microphone
+that might be open unannounced is a privacy question. A sound announces itself:
+nobody has to be *shown* that the pet is talking. So there is no visibility
+rule here, and that is what completes the chord's gesture — summon, ask,
+dismiss, and the answer arrives out loud with nothing left on screen to read.
+
+Which is also why the pet does not decide *what* to say aloud in the host. The
+gate lives in `scripts/gobbo/tts.py`: an answer that is empty, over
+`tts.max_chars` (320 by default, about twenty seconds), or built out of things
+a listener cannot hear — a code block, a heading, a list, a URL, more than one
+paragraph — is **refused rather than truncated**, with the reason on the status
+line. The answer is on the pet's face either way, so a refusal costs nothing
+that was there; reading half a sentence aloud as though it were whole is the
+same lie the screen already declines to tell. `"gate": false` turns it off.
+
+Opening the microphone silences the pet mid-sentence. That is the echo problem
+solved by construction rather than by a half-duplex timer: the two devices are
+never open in the same direction at once, so the room microphone cannot hear
+the pet and return its own words as a prompt. It is also just what
+interrupting someone means.
+
+**Interrupting kills the synthesiser**, and that is not heavy-handedness. A raw
+PCM stream has no utterance boundary in it, so there is nothing in the bytes
+that says where the abandoned reply ends — and inferring it from a gap in
+arriving audio does not work, because a synthesiser emits one *sentence* per
+burst and the gaps inside a reply are the same as the gaps between replies.
+Measured, when this was a gap heuristic: five seconds after an interrupt,
+546 KB — twelve seconds of speech — was still queued and playing. A kill cannot
+be wrong, and the replacement worker reloads its voice during the seconds the
+user spends saying the thing they interrupted for. A worker that has not been
+asked to speak is left alone, so interrupting a silent pet costs nothing.
+
 ### Global hotkeys
 
 ```python
@@ -1018,9 +1094,10 @@ beside it and in the package's `licenses/`.
 | `src/Capabilities.*` | what the platform granted, and why not |
 | `src/AppPaths.*` | exe-relative path resolution |
 | `src/Mic.*` | the recording device: one `SDL_AudioStream`, fixed at 16 kHz mono |
+| `src/Speaker.*` | the playback device: its mirror, at the voice's own rate |
 | `src/Hotkey.*` | global chords: parsing, the queue, and the three platforms compared |
 | `src/platform/Hotkey*.cpp` | one per platform — `XGrabKey`, `RegisterHotKey`, `RegisterEventHotKey`, and a stub that refuses |
-| `src/PyClippy.*` | the `clippy` extension module: host calls and `clippy.mic` |
+| `src/PyClippy.*` | the `clippy` extension module: host calls, `clippy.mic`, `clippy.speaker` and `clippy.hotkey` |
 | `src/Drawable.*` | transform, tree, alignment, the property system, `Stage` |
 | `src/Sprite.*` `src/Caption.*` | the two drawables |
 | `src/Texture.*` `src/Font.*` | PNG and WebP atlases (stb_image, libwebp), glyph atlases (stb_truetype) |

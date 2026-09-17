@@ -19,6 +19,7 @@
 #include "Drawable.h"
 #include "Hotkey.h"
 #include "Mic.h"
+#include "Speaker.h"
 #include "PyClippy.h"
 #include "Settings.h"
 
@@ -684,6 +685,19 @@ int main(int argc, char** argv)
                             : "Microphone unavailable: " + mic_err);
     }
 
+    // --- speaker ----------------------------------------------------------
+    // Asked separately from the microphone because the two fail separately:
+    // plenty of machines have output and no input. Nothing is opened here --
+    // a script calls clippy.speaker.start() when it has a voice to play.
+    std::string spk_err;
+    const bool has_speaker = !Speaker::devices(spk_err).empty();
+    app.window.caps_mutable().speaker = has_speaker;
+    if (!has_speaker) {
+        app.window.caps_mutable().notes.push_back(
+            spk_err.empty() ? "No playback device; clippy.speaker will refuse to start."
+                            : "Speaker unavailable: " + spk_err);
+    }
+
     // --- global hotkey ----------------------------------------------------
     // Asked the same way and for the same reason as the microphone: so
     // --capabilities can answer "can this desktop give the pet a shortcut"
@@ -836,9 +850,10 @@ int main(int argc, char** argv)
 
     PyClippy::fire("quit");
 
-    // The device goes before the interpreter does: a script's audio thread is
-    // still alive here, and it reads through this stream.
+    // The devices go before the interpreter does: a script's audio threads are
+    // still alive here, and they read and write through these streams.
     Mic::stop();
+    Speaker::stop();
 
     // The grab goes back to the desktop before the window it hangs off is
     // destroyed, and before the interpreter that would have been handed any
@@ -855,6 +870,7 @@ int main(int argc, char** argv)
 
     Py_FinalizeEx();
     Mic::quit();
+    Speaker::quit();
     app.tray.destroy();
     app.window.destroy();
     SDL_Quit();

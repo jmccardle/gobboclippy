@@ -2,7 +2,8 @@
 
 Press Ctrl+Alt+G from anywhere, or double-click the pet, to toggle the
 microphone. What it hears goes to a transcriber; committed utterances go to the
-agent; the answer is drawn on the window.
+agent; the answer is drawn on the window, and spoken aloud if a voice is
+configured.
 
 The chord is the one that matters in practice. The pet never holds keyboard
 focus and is usually behind whatever you are working in, so "double-click the
@@ -22,6 +23,11 @@ The transcriber has to be named in the config file first -- the assistant will
 tell you which file and what to write in it the first time you ask it to
 listen. See scripts/gobbo/config.py.
 
+The voice is optional in a way the transcriber is not. With no ``tts.command``
+the pet answers on screen and says nothing, which is what it has always done;
+with one, it does both. A voice that is named and then does not work is a
+failure and is reported as one -- see Assistant.ensure_workers().
+
 The one rule that is not this script's to bend: recording only happens while
 the pet is visible, because the visible pet is the recording indicator. The
 host enforces it -- hiding the window closes the device, and asking for the
@@ -33,7 +39,7 @@ import textwrap
 
 import clippy
 
-from gobbo import accumulate, asr, config, settings, tau
+from gobbo import accumulate, asr, config, settings, tau, tts
 
 WINDOW = (360, 420)
 
@@ -124,6 +130,7 @@ class Assistant:
             unclear_render=config.setting("asr", "unclear_render", "guess"))
         self.transcriber = None
         self.agent = None
+        self.voice = None           # None when no tts.command is configured
         self.listening = False      # the worker has loaded and is ready
 
         # The chord put the pet on screen, so the chord takes it away again.
@@ -153,6 +160,15 @@ class Assistant:
             clippy.mic.start()
         except (RuntimeError, config.Missing) as e:
             self.fail(str(e))
+            return
+
+        # Opening the microphone stops the pet talking, which is the echo
+        # problem solved by the cheapest possible means: the two devices are
+        # never open in the same direction at once, so the room microphone
+        # cannot hear the pet and return its own words as a prompt. It is also
+        # simply what interrupting someone means.
+        if self.voice:
+            self.voice.silence()
 
     def toggle_by_chord(self, *_):
         """The chord summons the pet, listens, and dismisses it again.
@@ -214,6 +230,30 @@ class Assistant:
                 # there must not look like an agent with nothing to say.
                 self.agent = None
                 self.fail(f"agent unavailable: {e}")
+
+        if self.voice is None:
+            # Two different absences, and they are not the same event.
+            #
+            # No tts.command means the user has not asked for a voice. A pet
+            # that answers on screen and says nothing is what this script did
+            # for its whole life so far, so that is not a failure and does not
+            # belong on the pet's face -- but it is written to the log, because
+            # "why is it not talking" deserves an answer somewhere.
+            #
+            # A command that is named and will not run is a failure, and is
+            # reported like the agent's: on screen, with dictation and the
+            # agent both still working.
+            try:
+                self.voice = tts.from_config(events)
+                self.voice.start()
+                clippy.log(f"voice: {' '.join(self.voice.argv)}")
+            except config.Missing:
+                self.voice = None
+                clippy.log("no tts.command configured; the pet will not speak. "
+                           f"See {config.path()}")
+            except RuntimeError as e:
+                self.voice = None
+                self.fail(f"voice unavailable: {e}")
 
     def on_mic(self, active):
         if active:
@@ -293,10 +333,17 @@ class Assistant:
                 self.fail(f"the agent stopped: {msg['error']}")
             elif msg.get("end_reason") not in (None, "done", "terminate"):
                 # 'length' or 'max_turns' means the answer on screen is a
-                # prefix, and a prefix that looks finished is a lie.
+                # prefix, and a prefix that looks finished is a lie. Not
+                # spoken for the same reason, and more so: the screen can at
+                # least carry the marker below, and a voice cannot.
                 self.reply.set(
                     wrapped(msg["text"], lines=REPLY_LINES) +
                     f"\n[cut short: {msg['end_reason']}]", WARN)
+            else:
+                # The turn ended on this text, so it is the answer, and that is
+                # the whole discriminator: agent_text fires per delta, and
+                # speaking those would stutter the same sentence.
+                self.speak(msg["text"])
 
         elif kind in ("agent_error", "agent_junk"):
             self.fail(f"agent: {msg.get('message') or msg.get('line')}")
@@ -305,6 +352,14 @@ class Assistant:
             self.agent = None
             self.fail(f"the agent exited ({msg['returncode']})\n{msg['stderr']}")
 
+        # --- the voice ---
+        elif kind == "voice_gone":
+            # Dictation and the agent are untouched, so this is the agent's
+            # kind of failure rather than the transcriber's: say it, keep
+            # working, and answer on screen alone from here.
+            self.voice = None
+            self.fail(f"the voice exited ({msg['returncode']})\n{msg['stderr']}")
+
     def ask(self, text):
         if not self.agent or not self.agent.ready:
             return
@@ -312,6 +367,20 @@ class Assistant:
             self.agent.ask(text)
         except RuntimeError as e:
             self.fail(f"agent: {e}")
+
+    def speak(self, text):
+        """Say the answer aloud, when there is a voice and it can be said.
+
+        The refusal goes on the status line rather than over the reply,
+        because the reply is the thing the user still wants to read -- the
+        whole point of a refusal is that the answer is not lost, only unsaid.
+        """
+        if not self.voice:
+            return
+        refused = self.voice.say(text)
+        if refused:
+            clippy.log(f"not spoken, because {refused}")
+            self.set_status(f"not spoken: {refused}", SLATE)
 
     # --- the frame hook ----------------------------------------------------
 
@@ -333,6 +402,8 @@ class Assistant:
             self.transcriber.stop()
         if self.agent:
             self.agent.stop()
+        if self.voice:
+            self.voice.stop()
 
 
 def bind_hotkey(me):

@@ -231,6 +231,7 @@ add_executable(gobboclippy
     src/Capabilities.cpp
     src/AppPaths.cpp
     src/Mic.cpp
+    src/Speaker.cpp
     src/Settings.cpp
     src/Hotkey.cpp
     ${GC_HOTKEY_BACKEND}

@@ -98,6 +98,7 @@ std::string Capabilities::report() const
       << "  skip taskbar  : " << yn(skip_taskbar) << "\n"
       << "  tray icon     : " << yn(tray) << "\n"
       << "  microphone    : " << yn(microphone) << "\n"
+      << "  speaker       : " << yn(speaker) << "\n"
       << "  global hotkey : " << yn(hotkey) << "\n"
       << "  hotkey release: " << yn(hotkey_release) << "\n"
       << "  image formats : ";

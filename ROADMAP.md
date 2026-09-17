@@ -16,9 +16,9 @@ explanations live in `README.md` and `docs/harvest.md` and should stay there.
 
 **Where this stands.** v0.6.0 is tagged and released. The base is done: window, transparency, tray, the harvested drawing
 layer, the effect compositor, the bundled interpreter and a relocatable package
-on three platforms; a microphone; a global chord that reaches the pet without
-focus; petdex pets in nine states; a control channel and a τ extension that
-drives one; a settings window whose fields Python defines. Windows and macOS
+on three platforms; a microphone and a voice; a global chord that reaches the
+pet without focus; petdex pets in nine states; a control channel and a τ
+extension that drives one; a settings window whose fields Python defines. Windows and macOS
 build and smoke-test in CI. There are no TODO markers in the tree.
 
 The v0.6.0 release attaches a Windows `.zip`, a macOS `.dmg` and a Linux
@@ -43,7 +43,8 @@ built from a clean checkout and are unaffected.
 `scripts/assistant.py` is a dictation loop today: the global chord summons the
 pet and starts recording (a second press stops and dismisses it), the
 double-click toggles the microphone on a pet already up, every committed
-utterance goes to the agent, and the reply is drawn on the window.
+utterance goes to the agent, and the reply is drawn on the window -- and spoken
+aloud when a voice is configured, which is **Speaking** below.
 
 **The pet does not decide whether it was spoken to.** Listening is something the
 user turns on, in one of three ways — two of which now exist, the double-click
@@ -107,10 +108,9 @@ file used to carry; the long form is in `.archive/HISTORY.md`.
 
 **The echo problem, recorded before it is met.** Once the pet has a voice, an
 open room microphone hears it and returns its own words as a prompt. Hotkey and
-PTT dodge this by construction; conversational mode does not. tectum solved it
-in `agent.persona_live` with a half-duplex gate closed after every turn, and its
-handset node notes it does *not* need one because a phone cannot hear itself
-(`tectum/nodes/agents/edge_asr.py`). A desktop pet is the room case, not the
+PTT dodge this by construction; conversational mode does not. The usual answer
+is a half-duplex gate closed after every turn, which a handset does not need at
+all because a phone cannot hear itself. A desktop pet is the room case, not the
 handset case.
 
 ### Transcribers
@@ -136,38 +136,92 @@ branches in `scripts/gobbo/asr.py`.
 
 ## Speaking
 
-There is no audio output path anywhere. `src/Mic.cpp` is one capture-only
-`SDL_AudioStream`, and the pet answers by drawing text. This is structurally the
-mirror of the microphone — a fixed format, the host owning the device, and a
-subprocess for the synthesiser so it can be swapped the way the transcriber can.
+**The pet speaks.** `src/Speaker.*` is the playback device — the microphone's
+mirror, one `SDL_AudioStream` — `scripts/gobbo/tts.py` is the synthesiser as a
+subprocess, and `scripts/assistant.py` says the agent's answer aloud when the
+turn ends on it. `tts.command` in the config names the program; with none, the
+pet answers on screen and says nothing, which is the one place this differs
+from the transcriber and it differs deliberately (a voice nobody asked for is
+not a missing dependency). See `README.md` "Speaking".
 
-The reference implementation is tectum's `effector.speech`
-(`tectum/nodes/effectors/speech.py`), which is worth reading before writing
-this. What it already establishes:
+Three decisions worth keeping, because each one had an alternative:
 
-- [ ] **Piper as the synthesiser.** `piper --model <voice>.onnx --output_raw`,
-      text on stdin, raw PCM on stdout at the sample rate named in the voice's
-      own JSON (22050 for `amy-medium`). Play it, or in our case hand it to SDL.
-- [ ] **A named voice, with no default.** `edge_asr.py` records what the
-      alternative costs: omitting the voice means "whichever one is selected",
-      which is only an answer when one *is* — otherwise the far end refuses the
-      utterance and the stack cannot see that it did. Same rule as the
-      transcriber: print the config to write. Note the multi-speaker case, where
-      an omitted `speaker_id` means 0 rather than "unspecified".
-- [ ] **An unspeakable reply is refused, not truncated.** tectum's limit is 320
-      characters, about twenty seconds, and text over it comes back to the agent
-      with the reason and an instruction to rewrite it as one speakable
-      sentence. A prefix that sounds finished is a lie, which is the same rule
-      `assistant.py` already applies to a `length`-stopped answer on screen.
-- [ ] **DSP colouring is optional and last.** tectum's `radio` preset is a
-      character choice, not a requirement.
+* **A hidden pet may speak, and the microphone's rule does not mirror.**
+  Recording while hidden is refused because the visible pet is the recording
+  indicator; a sound announces itself, so there is nothing for the window to
+  indicate. This is what finally completes the chord's gesture — summon, ask,
+  dismiss, and the answer arrives out loud.
+* **The rate is the voice's, not pinned.** `Mic` fixes 16 kHz because every
+  transcriber wants exactly that. A synthesiser's rate comes from the voice it
+  loaded (22050 for piper's medium voices, 16000 for its low ones), so it is an
+  argument to `start()` and SDL converts.
+* **Opening the microphone silences the pet.** The echo problem, solved by
+  construction rather than by a half-duplex timer: the two devices are never
+  open in the same direction at once. See the echo note above, which this
+  answers for the hotkey path and not for conversational mode.
+* **Interrupting kills the synthesiser**, because a raw PCM stream carries no
+  utterance boundary and a gap heuristic cannot find one — a synthesiser emits
+  one *sentence* per burst, so the gaps inside a reply are the gaps between
+  replies. That was built, measured and thrown away: five seconds after an
+  interrupt, 546 KB of abandoned speech was still queued and playing. The kill
+  cannot be wrong, and the reload hides behind the user's own sentence.
 
-**One thing not to copy.** `effector.speech` selects a backend by what is
-installed — robot, then piper, then espeak, then a null that records what it
-would have said. That chain is right for a substrate that must keep running
-unattended and wrong here: gobboclippy's precedent is the transcriber, which has
-no default because a wrong guess is a pet that never answers instead of a
-sentence saying what to fix.
+Everything in the speaking path is safe from the frame hook, and that was
+measured rather than assumed: a 60 fps loop under synthesis and playback shows
+no dropped frames, `clippy.speaker.clear()` exists because closing and
+reopening a device to interrupt a sentence cost 60-100 ms of the drawing
+thread, and `Voice.stop()` terminates rather than waiting because a graceful
+wait on a synthesiser mid-sentence is seconds of frozen window on the way out.
+The one stall left is ~80 ms closing the device at quit.
+
+Measured, so the "keep it warm" decision is not a guess: piper 1.4.2 with a
+63 MB `en_US-amy-medium` takes 1.56 s to its first samples and 0.24 s per
+utterance after that in the same process. It also emits a whole sentence in a
+burst — 192 KB inside 40 ms — which is why nothing in `tts.py` paces anything.
+
+**Why piper stays a subprocess rather than a linked library.** Its native side
+needs onnxruntime (23 MB of shared library) plus libespeak-ng and its phoneme
+data, because the voice configs say `phoneme_type: espeak`. That is ~100 MB
+added to an 11.8 MB package, per platform, with a 63 MB voice on top — and the
+Windows build is mingw against legacy msvcrt while onnxruntime ships MSVC/UCRT
+builds, which is the C-runtime boundary `docs/cross-compile.md` already warns
+about. The transcriber's precedent costs nothing by comparison.
+
+- [ ] **Colouring the voice.** A synthesiser's output is clean, and a pet is a
+      character; effects between the worker and the device are how the second
+      one sounds like itself. The seam is `Speaker::write()`, where the host
+      already holds the samples. The thing to get right is that a filter runs
+      on a stream and not on a buffer: anything indexing from zero per call
+      clicks at every block boundary, so whatever carries phase or a sample
+      counter has to carry it across writes.
+- [ ] **A synthesiser that frames its output.** The one thing that would make
+      the interrupt cheap instead of a kill: a worker emitting an utterance id
+      and a length before each block, so an abandoned reply can be recognised
+      and dropped rather than inferred. That is our own worker rather than
+      piper, which is the same shape as the self-starting local transcriber
+      under **Transcribers** — and the same argument, since both are "the
+      contract is right, the reference program is somebody else's".
+- [ ] **A voice in the settings window.** Needs the file picker question
+      answered; `tts.command` is a text field like the other two.
+- [ ] **The multi-speaker case.** `en_US-amy-medium` is single-speaker. For a
+      model like `libritts_r` (904 of them) an omitted `speaker_id` means 0
+      rather than "unspecified", which is the sort of default that is wrong
+      quietly: a config that names no speaker gets one anyway, and nothing
+      says so.
+
+**One thing deliberately not done.** A synthesiser chain that picks a backend by
+what is installed — piper, then espeak, then a null that records what it would
+have said — is the right shape for a service that has to keep running
+unattended, and the wrong one here. gobboclippy's precedent is the transcriber,
+which has no default because a wrong guess is a pet that never answers instead
+of a sentence saying what to fix. `tts.command` has no default for the same
+reason.
+
+**And one thing deferred rather than decided.** A gate could hand a refused
+answer back to the agent with an instruction to rewrite it as one speakable
+sentence. Ours refuses and stops there, because `scripts/gobbo/tau.py` has no
+seam for injecting a follow-up prompt — τ owns its own context. Adding one is
+how the retry lands.
 
 ---
 
@@ -217,7 +271,7 @@ What is left is the rest of the settings. Each is a `Section` subclass, and
 none of them needs C++ — the hotkey field did, since a chord is a widget rather
 than a value you type, but every item below is a text box or a list.
 
-- [ ] **The transcriber and agent commands.** The two that currently have no
+- [ ] **The transcriber, agent and voice commands.** The three that have no
       default and raise with the JSON to write — see `gobbo/config.py`. A text
       field is not enough on its own: the useful version validates that the
       command exists before saving, because the failure otherwise arrives at the
@@ -252,6 +306,12 @@ so the check is a person on the platform rather than a test.
 - [ ] **Capture off Linux.** What CI proves on Windows and macOS is the refusals
       (hidden-pet, close-on-hide, no device), because no runner has an audio
       stack. The capture path itself is verified only on this desktop.
+- [ ] **Playback off Linux.** The same gap, for the same reason, and the same
+      shape of test: the smoke test covers the refusals and the
+      hidden-pet-may-speak asymmetry on all three platforms, and a sample
+      actually reaching a sound card is verified only here — by recording the
+      sink monitor while the assistant answered, since a runner has no speakers
+      and this desktop has no second pair of ears.
 - [ ] **Pets off Linux.** The WebP decode and its failure are in the smoke test
       on all three platforms. Installing a pet needs the network and driving one
       needs a window; runners have neither.

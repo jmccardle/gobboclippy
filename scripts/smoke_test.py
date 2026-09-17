@@ -31,8 +31,8 @@ caps = clippy.capabilities()
 clippy.log(f"driver={caps['video_driver']} platform={caps['platform']}")
 
 for key in ("platform", "video_driver", "borderless", "always_on_top",
-            "transparent", "skip_taskbar", "tray", "microphone", "hotkey",
-            "hotkey_release", "notes"):
+            "transparent", "skip_taskbar", "tray", "microphone", "speaker",
+            "hotkey", "hotkey_release", "notes"):
     if key not in caps:
         FAILURES.append(f"capabilities() missing key {key!r}")
 
@@ -301,6 +301,108 @@ else:
     check("a refused start leaves the mic idle", clippy.mic.active(), False)
     check("a refused start queued nothing", clippy.mic.queued(), 0)
     check("a refused start fires no hook", mic_seen, [])
+
+# --- the speaker ------------------------------------------------------------
+# The microphone's section applies here almost word for word: no runner has an
+# output device either, so everything below holds with no hardware or is
+# branched on whether the open worked. What is *not* mirrored is the visibility
+# rule, and that asymmetry is asserted rather than assumed -- a hidden pet may
+# speak, because a sound announces itself and there is nothing for the window to
+# indicate. See src/Speaker.h.
+#
+# Nothing audible is written: the samples below are zeroes, which exercise the
+# whole path and make no noise on a developer's machine.
+
+check("speaker spec is the default format", clippy.speaker.spec(),
+      (22050, 1, "s16le"))
+check("speaker devices() returns a list",
+      isinstance(clippy.speaker.devices(), list), True)
+check("idle speaker is not active", clippy.speaker.active(), False)
+check("idle speaker has nothing queued", clippy.speaker.queued(), 0)
+check("idle speaker is not drained", clippy.speaker.drained(), False)
+
+# Closing something that is not open changed nothing, so it is a no-op.
+clippy.speaker.stop()
+check("stop() on an idle speaker is a no-op", clippy.speaker.active(), False)
+
+# Audio written to a closed device must not vanish quietly: a script that
+# forgot to start() should hear about it rather than wonder why it is silent.
+try:
+    clippy.speaker.write(b"\0\0")
+except RuntimeError as exc:
+    clippy.log(f"PASS  write() refuses while closed ({str(exc)[:44]}...)")
+else:
+    FAILURES.append("speaker.write() accepted audio with no device open")
+
+# A bad format is the script's mistake, not the desktop's.
+for bad in ({"rate": 0}, {"channels": 0}, {"rate": -1}):
+    try:
+        clippy.speaker.start(**bad)
+    except ValueError:
+        pass
+    except RuntimeError as exc:
+        FAILURES.append(f"speaker.start({bad}) raised RuntimeError: {exc}")
+    else:
+        FAILURES.append(f"speaker.start({bad}) opened a device")
+        clippy.speaker.stop()
+
+spk_refusal = None
+try:
+    clippy.speaker.start()
+except RuntimeError as exc:
+    spk_refusal = str(exc)
+
+if not caps["speaker"]:
+    check("no enumerated device, so speaker.start() refused",
+          spk_refusal is not None, True)
+
+if spk_refusal is None:
+    check("speaker is active after start()", clippy.speaker.active(), True)
+    check("an open speaker with nothing written is drained",
+          clippy.speaker.drained(), True)
+
+    try:
+        clippy.speaker.start()
+    except RuntimeError:
+        clippy.log("PASS  a second speaker.start() is refused")
+    else:
+        FAILURES.append("speaker.start() opened a second device")
+
+    # A tenth of a second of silence, accepted whole: SDL queues what it is
+    # given, so a short write is not something that happens.
+    silence = b"\0\0" * (22050 // 10)
+    check("write() accepts the whole buffer",
+          clippy.speaker.write(silence), len(silence))
+
+    # clear() is what interrupting a sentence uses, and the thing that makes it
+    # worth having over stop()+start() is that the device survives it.
+    clippy.speaker.write(silence)
+    clippy.speaker.clear()
+    check("clear() empties the queue", clippy.speaker.queued(), 0)
+    check("clear() leaves the device open", clippy.speaker.active(), True)
+    check("clear() on an empty queue is a no-op",
+          (clippy.speaker.clear(), clippy.speaker.active()), (None, True))
+
+    # The one place the mirror is deliberately broken. Hiding the pet closes
+    # the microphone; it must not close the speaker.
+    clippy.hide()
+    check("hiding leaves the speaker open", clippy.speaker.active(), True)
+    try:
+        clippy.speaker.write(silence)
+    except RuntimeError as exc:
+        FAILURES.append(f"a hidden pet was refused the speaker: {exc}")
+    else:
+        clippy.log("PASS  a hidden pet may still speak")
+    clippy.show()
+
+    clippy.speaker.stop()
+    check("stop() closes the speaker", clippy.speaker.active(), False)
+    check("a closed speaker has nothing queued", clippy.speaker.queued(), 0)
+else:
+    clippy.log(f"note: no usable playback device ({spk_refusal[:60]})")
+    check("a refused speaker start leaves it closed",
+          clippy.speaker.active(), False)
+    check("a refused speaker start queued nothing", clippy.speaker.queued(), 0)
 
 # --- the global hotkey ------------------------------------------------------
 # Pressing the key is not covered here and cannot be. A global grab is global:
